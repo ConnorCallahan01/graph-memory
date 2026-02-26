@@ -1,0 +1,38 @@
+{
+  "name": "agent-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "build": "tsc",
+    "mcp": "tsx src/graph-memory/mcp-server.ts",
+    "status": "tsx -e \"import {handleGraphMemory} from './src/graph-memory/tools.js'; const r = await handleGraphMemory({action:'status'}); console.log(r.content[0].text);\"",
+    "consolidate": "tsx -e \"import {initializeGraph} from './src/graph-memory/index.js'; import {runLibrarian} from './src/graph-memory/pipeline/librarian.js'; initializeGraph(); await runLibrarian(process.argv[2] || 'manual');\"",
+    "dream": "tsx -e \"import {initializeGraph} from './src/graph-memory/index.js'; import {runDreamer} from './src/graph-memory/pipeline/dreamer.js'; initializeGraph(); await runDreamer(process.argv[2] || 'manual');\"",
+    "revert": "tsx src/graph-memory/cli-revert.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "latest",
+    "@anthropic-ai/sdk": "^0.78.0",
+    "@modelcontextprotocol/sdk": "^1.27.1",
+    "chokidar": "^4.0.0",
+    "dotenv": "^16.4.0",
+    "express": "^4.21.0",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.1",
+    "simple-git": "^3.32.3",
+    "ws": "^8.18.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/js-yaml": "^4.0.9",
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0",
+    "vitest": "^3.0.0"
+  }
+}

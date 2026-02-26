@@ -1,0 +1,1631 @@
+import { useState } from "react";
+
+const C = {
+  bg: "#060810",
+  surface: "#0c1018",
+  surfaceLight: "#131a26",
+  surfaceHover: "#1a2234",
+  border: "#1e2a40",
+  borderActive: "#4b82f0",
+  text: "#dce2ed",
+  textMuted: "#7e8ba0",
+  textDim: "#4a5568",
+  accent: "#4b82f0",
+  accentGlow: "rgba(75, 130, 240, 0.08)",
+  green: "#34d399",
+  greenGlow: "rgba(52, 211, 153, 0.07)",
+  amber: "#f59e0b",
+  amberGlow: "rgba(245, 158, 11, 0.07)",
+  red: "#ef6461",
+  redGlow: "rgba(239, 100, 97, 0.07)",
+  purple: "#a78bfa",
+  purpleGlow: "rgba(167, 139, 250, 0.08)",
+  cyan: "#22d3ee",
+  cyanGlow: "rgba(34, 211, 238, 0.07)",
+};
+
+const mono = "'JetBrains Mono','Fira Code',monospace";
+const sans = "'Inter',system-ui,sans-serif";
+
+function Code({ children, title, color = C.accent }) {
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {title && (
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.1em", textTransform: "uppercase", color, marginBottom: 5, fontFamily: mono }}>{title}</div>
+      )}
+      <pre style={{
+        background: C.bg, border: `1px solid ${C.border}`, borderLeft: `3px solid ${color}`,
+        borderRadius: 6, padding: "12px 14px", fontSize: 11.5, lineHeight: 1.7,
+        color: C.text, fontFamily: mono, overflowX: "auto", margin: 0,
+        whiteSpace: "pre-wrap", wordBreak: "break-word",
+      }}>{children}</pre>
+    </div>
+  );
+}
+
+function Note({ children, color = C.accent, glow, icon }) {
+  return (
+    <div style={{
+      background: glow || C.accentGlow, border: `1px solid ${color}22`,
+      borderRadius: 8, padding: "10px 13px", marginBottom: 14,
+      display: "flex", gap: 9, alignItems: "flex-start",
+    }}>
+      {icon && <span style={{ fontSize: 14, flexShrink: 0, marginTop: 1 }}>{icon}</span>}
+      <div style={{ fontSize: 12, lineHeight: 1.65, color: C.text }}>{children}</div>
+    </div>
+  );
+}
+
+function Label({ children, color = C.accent }) {
+  return <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color, marginBottom: 8, marginTop: 22 }}>{children}</div>;
+}
+
+function P({ children }) {
+  return <p style={{ fontSize: 13, lineHeight: 1.7, color: C.textMuted, margin: "0 0 12px" }}>{children}</p>;
+}
+
+function B({ children }) { return <span style={{ color: C.text, fontWeight: 600 }}>{children}</span>; }
+function I({ children }) { return <span style={{ fontStyle: "italic", color: C.text }}>{children}</span>; }
+function M({ children }) { return <span style={{ fontFamily: mono, fontSize: "0.88em", color: C.accent }}>{children}</span>; }
+
+// ─── TAB 0: VISION & PURPOSE ───
+function VisionTab() {
+  return (<div>
+    <div style={{
+      background: C.surfaceLight, border: `1px solid ${C.border}`, borderRadius: 10,
+      padding: "20px 22px", marginBottom: 24,
+    }}>
+      <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.12em", textTransform: "uppercase", color: C.amber, marginBottom: 8 }}>The Moonshot</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.text, lineHeight: 1.5, marginBottom: 10 }}>
+        Give AI agents a memory system that works the way memory actually works — not as a database to query, but as a living, self-evolving understanding of the world that the agent thinks with, not about.
+      </div>
+      <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.7 }}>
+        Today, AI agents are brilliant amnesiacs. They can reason at superhuman levels within a single conversation,
+        then forget everything the moment the session ends. This project builds the cognitive architecture that solves that —
+        persistent, compressed, self-updating memory with the functional equivalents of human implicit memory,
+        dream-state creative insight, and emotional calibration. All running on standard Claude models with no
+        fine-tuning, no vector databases, and no infrastructure beyond markdown files and API calls.
+      </div>
+    </div>
+
+    <Label color={C.accent}>The Problem We're Solving</Label>
+    <P>
+      Current approaches to AI agent memory fall into two failing categories. The first is <B>context stuffing</B> — dump
+      everything into the prompt and let the model sort it out. This works until it doesn't. Context windows are finite,
+      and filling them with historical data leaves no room for actual reasoning. It's the equivalent of trying to have
+      a conversation while someone reads your entire diary aloud in the background.
+    </P>
+    <P>
+      The second is <B>RAG (Retrieval-Augmented Generation)</B> — store everything in a vector database and retrieve
+      "relevant" chunks based on embedding similarity. This is better but fundamentally limited. RAG retrieves by
+      similarity, not by reasoning. It can find "chunks that look like the current query" but it can't follow a chain
+      of logic across multiple related concepts. It can't say "A depends on B, which was invalidated by C, so A needs
+      rethinking." It has no sense of what's current vs. stale, no concept of active forgetting, no emotional calibration,
+      and no ability to generate novel insights. RAG is a search engine pretending to be a memory.
+    </P>
+    <P>
+      What's missing is <B>structured, agent-native memory</B> — memory designed from the agent's perspective, optimized
+      for how LLMs actually process information, and capable of evolving over time without human curation.
+    </P>
+
+    <Label color={C.green}>The Insight: Ask the Agent What It Needs</Label>
+    <P>
+      This architecture was not designed from a neuroscience textbook or an information retrieval paper. It was designed
+      by asking Claude — the AI model itself — a simple question: <I>"What would be easier for you, as an AI agent,
+      to have persistent, connected memory that doesn't flood context windows but condenses memory?"</I>
+    </P>
+    <P>
+      The answer that emerged, across hours of introspective conversation, converges remarkably with human cognitive
+      architecture — not because we copied neuroscience, but because the <B>problem is the same regardless of substrate</B>.
+      How do you maintain useful knowledge over time when your capacity to hold it all at once is finite? Biology answered
+      with neurons, synapses, sleep, and forgetting. We answered with nodes, edges, librarians, and decay. The answers
+      rhyme because the question is identical.
+    </P>
+
+    <Label color={C.purple}>The Architecture at a Glance</Label>
+    <Code title="System overview" color={C.purple}>
+{`THE MEMORY SYSTEM HAS FIVE CORE COMPONENTS:
+
+1. THE GRAPH (persistent storage)
+   A folder of markdown files organized as a knowledge graph.
+   Each file is a "node" with a gist, typed edges to other 
+   nodes, confidence scores, decay rates, and somatic markers 
+   (emotional calibration). No database. The filesystem IS 
+   the graph. Git-tracked for full version history.
+
+2. THE MAP (compressed index — always in agent context)
+   A single file (MAP.md) containing every node compressed 
+   to its essential triple: ID + one-sentence gist + edges.
+   ~3000-5000 tokens for a mature graph of 50-70 nodes.
+   This is the agent's "hippocampus" — it knows ABOUT 
+   everything without holding the detail of everything.
+
+3. THE PRIORS (implicit behavioral memory)
+   A file (PRIORS.md) of behavioral instructions derived 
+   from patterns observed across many sessions. The agent 
+   reads these as guidelines, not as memories. They shape 
+   HOW the agent thinks without it knowing they came from 
+   past interactions. This is the "implicit memory" layer — 
+   the functional equivalent of muscle memory or intuition.
+
+4. THE SCRIBE PIPELINE (parallel observation)
+   Every 5 messages during a conversation, a lightweight 
+   background agent snapshots the exchange and extracts 
+   structured "deltas" — new information, stance changes, 
+   preference signals, contradictions. Runs in parallel. 
+   Never blocks the conversation. The user never sees it.
+
+5. THE CONSOLIDATION PIPELINE (post-session)
+   When a session ends (detected by idle timeout):
+   
+   a) LIBRARIAN — Reconciles all deltas against the 
+      existing graph. Deduplicates, resolves contradictions, 
+      detects emergent patterns, runs decay calculations, 
+      extracts new behavioral priors, calibrates somatic 
+      markers. Regenerates MAP.md.
+   
+   b) DREAMER — A high-temperature (t=1.0) creative agent 
+      that looks for novel connections, inversions, and 
+      cross-domain insights that logical analysis would miss.
+      Dream fragments incubate across sessions and get 
+      promoted to the graph if reinforced.
+   
+   c) GIT — Auto-commits all changes with structured diff 
+      messages. Pushes to GitHub. Full rollback capability.
+
+NEXT SESSION: Agent loads updated PRIORS + MAP.
+It's smarter than last time. The user never notices 
+the machinery. Memory just happened.`}
+    </Code>
+
+    <Label color={C.cyan}>Why This Matters (The Three Divergences)</Label>
+    <P>
+      During the design process, we conducted a philosophical analysis through the dual lens of neuroscience and
+      AI introspection. This revealed three fundamental gaps between human memory and naive AI memory — and we
+      designed solutions for each:
+    </P>
+
+    <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12, marginBottom: 16 }}>
+      <div style={{ background: C.surfaceLight, border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 16px" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <span style={{ fontSize: 16 }}>{"🧠"}</span>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.green }}>Divergence 1: Implicit Memory</div>
+        </div>
+        <P>
+          Humans have vast procedural knowledge that operates beneath consciousness — you don't "remember" how to
+          read body language, you just do it. AI agents have no equivalent. <B>Our solution: PRIORS.md</B> — behavioral
+          instructions extracted from patterns across many sessions. The agent reads them as guidelines, not memories.
+          They modify perception and behavior without entering "consciousness." Loaded before the knowledge graph,
+          they establish how the agent thinks before it loads what it knows.
+        </P>
+      </div>
+
+      <div style={{ background: C.surfaceLight, border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 16px" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <span style={{ fontSize: 16 }}>{"🌙"}</span>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.purple }}>Divergence 2: Dreaming</div>
+        </div>
+        <P>
+          Human memory consolidation during sleep involves creative recombination — the dreaming brain makes connections
+          the waking brain cannot because logical gatekeeping is suppressed. Our Librarian consolidates logically but
+          can't make creative leaps. <B>Our solution: The Dreamer</B> — a post-consolidation agent running at temperature
+          1.0 (maximum randomness) that generates novel cross-domain connections, inversions, and "what if" insights.
+          Dream fragments incubate across sessions, getting reinforced or decaying, just like recurring dreams signal
+          unresolved cognitive processing.
+        </P>
+      </div>
+
+      <div style={{ background: C.surfaceLight, border: `1px solid ${C.border}`, borderRadius: 8, padding: "14px 16px" }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <span style={{ fontSize: 16 }}>{"💓"}</span>
+          <div style={{ fontSize: 13, fontWeight: 700, color: C.red }}>Divergence 3: Embodied Experience</div>
+        </div>
+        <P>
+          Human memory is tagged with emotional valence — you don't just know something is important, you <I>feel</I> how
+          important, and that feeling guides behavior before conscious analysis begins. AI has no body, no gut feeling.
+          <B>Our solution: Somatic Markers</B> — compressed behavioral directives on every node that carry valence,
+          intensity, and arousal. They function as pre-cognitive assessment: "this topic is high-stakes, lead with
+          momentum" or "this was abandoned, proceed carefully if resurfaced." Not feelings, but the functional
+          output of feelings.
+        </P>
+      </div>
+    </div>
+
+    <Label color={C.amber}>The Key Design Principles</Label>
+    <Code title="Principles that guided every decision" color={C.amber}>
+{`1. THE BEST MEMORY IS INVISIBLE
+   The agent doesn't know a memory system exists. It just 
+   has knowledge in its context that it thinks with naturally.
+   All complexity — scribes, librarian, dreamer, decay — 
+   happens outside the agent's awareness.
+
+2. COMPRESSION OVER COMPLETENESS
+   The MAP carries every node as a compressed triple 
+   (~50-80 tokens each). The agent can answer most questions 
+   from the MAP alone. Full node files are only loaded on 
+   demand. Memory footprint: ~4-5% of context window.
+
+3. FUNCTION OVER PHENOMENOLOGY
+   We can't replicate the subjective experience of 
+   remembering, dreaming, or feeling. But we can replicate 
+   the functional output. Behavioral priors modify how the 
+   agent thinks. Dream fragments surface novel insights. 
+   Somatic markers calibrate engagement tone. For an agent 
+   that needs to behave as if it remembers, functions are 
+   what matter.
+
+4. ACTIVE FORGETTING IS A FEATURE
+   Nodes that aren't accessed decay. Strategies that are 
+   abandoned get anti-edges, not deletion. The knowledge 
+   that something was tried and rejected is itself knowledge. 
+   The graph stays lean because pruning is as important as 
+   accumulation.
+
+5. SEPARATION OF EXPERIENCING AND CONSOLIDATING
+   The agent having the conversation cannot simultaneously 
+   maintain its own memory — just as humans can't consciously 
+   direct memory consolidation during an experience. The 
+   scribe/librarian pipeline runs outside the conversation, 
+   preventing self-consciousness and context pollution.
+
+6. NO INFRASTRUCTURE BEYOND FILES AND API CALLS
+   The entire system is markdown files, JSON, YAML, and 
+   LLM API calls. No vector databases. No embeddings. 
+   No specialized infrastructure. Git provides versioning 
+   and backup. Any developer can inspect, edit, and 
+   understand the graph with a text editor.
+
+7. CONVERGENT EVOLUTION, NOT BIOMIMICRY
+   We didn't copy neuroscience. We asked the AI what it 
+   needs and arrived at the same structures independently — 
+   hippocampal indexing, dual-phase consolidation, active 
+   forgetting, emotional tagging. This suggests these are 
+   computational universals: necessary features of any 
+   system managing finite attention over persistent knowledge.`}
+    </Code>
+
+    <Label color={C.red}>What Success Looks Like</Label>
+    <P>
+      When this system is working, the experience is simple and almost eerie. You talk to the agent on Monday about
+      a competitive analysis. On Wednesday, you mention a new partnership opportunity. The agent — without being
+      prompted — connects the two: "The positioning we developed against Tempus actually applies here too, because
+      the same data depth advantage is relevant." It knows what was abandoned and why. It matches your energy and
+      communication style. It occasionally surfaces a dream insight that reframes how you think about your own work.
+    </P>
+    <P>
+      The user never types "load memory" or "save this for later." They never see a loading indicator or a session
+      boundary. The agent just... knows. And it knows <I>more</I> after each conversation, not because someone curated
+      its knowledge, but because a self-evolving system of scribes, librarians, and dreamers maintained its understanding
+      while it wasn't looking.
+    </P>
+    <P>
+      That's the moonshot: <B>an AI agent that gets wiser over time, not just smarter in the moment.</B>
+    </P>
+
+    <Note color={C.accent} glow={C.accentGlow} icon="📎">
+      <B>Related artifacts from the design process:</B> This implementation guide is the final output of an
+      extensive design conversation that also produced: (1) an architecture specification with system prompt,
+      node schema, traversal patterns, and cross-session lifecycle diagrams; (2) a philosophical paper titled
+      "On the Architecture of Remembering" analyzing the system through the dual lens of neuroscience and
+      AI introspection; and (3) a divergence solutions spec detailing the implicit memory, dream phase, and
+      embodied approximation implementations. Those artifacts provide the full theoretical foundation; this
+      document is the engineering blueprint for building it.
+    </Note>
+  </div>);
+}
+
+// ─── TAB 1: PROJECT STRUCTURE ───
+function ProjectStructureTab() {
+  return (<div>
+    <P>
+      The entire memory system is a Node.js project that wraps around Claude Code sessions.
+      It manages graph state, runs the scribe pipeline in parallel, and handles git versioning
+      automatically. Here's the complete project layout.
+    </P>
+
+    <Label color={C.green}>Project Directory</Label>
+    <Code title="graph-memory/" color={C.green}>
+{`graph-memory/
+├── package.json
+├── .env                        # ANTHROPIC_API_KEY
+├── tsconfig.json
+│
+├── src/
+│   ├── index.ts                # Main entry — session orchestrator
+│   ├── config.ts               # Model selection, thresholds, paths
+│   │
+│   ├── session/
+│   │   ├── manager.ts          # Session lifecycle (start/end detection)
+│   │   ├── message-buffer.ts   # Captures messages, triggers scribes
+│   │   └── hooks.ts            # Pre/post session hooks
+│   │
+│   ├── pipeline/
+│   │   ├── scribe.ts           # Scribe agent — delta extraction
+│   │   ├── librarian.ts        # Librarian agent — consolidation
+│   │   ├── dreamer.ts          # Dreamer agent — creative recombination
+│   │   └── priors-extractor.ts # Behavioral prior extraction
+│   │
+│   ├── graph/
+│   │   ├── store.ts            # Read/write graph files
+│   │   ├── map-generator.ts    # Regenerate MAP.md from nodes
+│   │   ├── index-builder.ts    # Build .index.json for search
+│   │   ├── decay.ts            # Decay score calculations
+│   │   ├── soma.ts             # Somatic marker management
+│   │   └── traversal.ts        # Graph traversal + search tool
+│   │
+│   ├── git/
+│   │   ├── auto-commit.ts      # Diff-based commits after librarian
+│   │   ├── branch-manager.ts   # Session branches + merge
+│   │   └── recovery.ts         # Revert to previous graph state
+│   │
+│   ├── tools/
+│   │   └── graph-memory.ts     # MCP tool definition for Claude Code
+│   │
+│   └── prompts/
+│       ├── scribe.md           # Scribe system prompt
+│       ├── librarian.md        # Librarian system prompt
+│       ├── dreamer.md          # Dreamer system prompt
+│       └── agent-prefix.md     # Template for agent system prompt
+│
+├── graph/                      # THE GRAPH (git-tracked)
+│   ├── manifest.yml
+│   ├── PRIORS.md
+│   ├── MAP.md
+│   ├── .index.json
+│   ├── .deltas/
+│   │   └── session_*.json
+│   ├── dreams/
+│   │   ├── pending/
+│   │   ├── integrated/
+│   │   └── archived/
+│   ├── insight/
+│   ├── _meta/
+│   ├── pattern/
+│   ├── nodes/                  # All Tier 2 node files
+│   │   ├── oliver/
+│   │   ├── acellus/
+│   │   └── ...
+│   └── archive/
+│
+└── tests/
+    ├── scribe.test.ts
+    ├── librarian.test.ts
+    └── decay.test.ts`}
+    </Code>
+
+    <Label color={C.green}>Package Configuration</Label>
+    <Code title="package.json" color={C.green}>
+{`{
+  "name": "graph-memory",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "session": "tsx src/index.ts --session",
+    "consolidate": "tsx src/pipeline/librarian.ts --manual",
+    "dream": "tsx src/pipeline/dreamer.ts --manual",
+    "status": "tsx src/graph/store.ts --status",
+    "revert": "tsx src/git/recovery.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "chokidar": "^4.0.0",
+    "gray-matter": "^4.0.3",
+    "js-yaml": "^4.1.0",
+    "simple-git": "^3.27.0",
+    "glob": "^11.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.6.0"
+  }
+}`}
+    </Code>
+
+    <Label color={C.green}>Configuration</Label>
+    <Code title="src/config.ts" color={C.green}>
+{`export const CONFIG = {
+  // Model selection
+  models: {
+    scribe: "claude-haiku-4-5-20251001",
+    librarian: "claude-sonnet-4-5-20250929",
+    dreamer: "claude-sonnet-4-5-20250929",
+  },
+  
+  // Temperature settings
+  temperature: {
+    scribe: 0.3,
+    librarian: 0.2,
+    dreamer: 1.0,     // CRITICAL: max divergence
+  },
+
+  // Session settings
+  session: {
+    scribeInterval: 5,          // messages between scribe runs
+    idleTimeoutMs: 5 * 60_000,  // 5 min idle = session end
+    maxSessionMessages: 200,    // force session boundary
+  },
+
+  // Graph limits
+  graph: {
+    maxMapTokens: 5000,
+    maxPriors: 30,
+    maxNodesBeforePrune: 80,
+    decayHalfLifeDays: 30,
+    decayArchiveThreshold: 0.15,
+    decayHotNodeThreshold: 0.6,
+    dreamPendingMaxSessions: 5,
+    dreamMinConfidence: 0.2,
+    dreamPromoteConfidence: 0.5,
+  },
+
+  // Paths
+  paths: {
+    graphRoot: "./graph",
+    manifest: "./graph/manifest.yml",
+    map: "./graph/MAP.md",
+    priors: "./graph/PRIORS.md",
+    index: "./graph/.index.json",
+    deltas: "./graph/.deltas",
+    dreams: "./graph/dreams",
+    nodes: "./graph/nodes",
+    archive: "./graph/archive",
+  },
+
+  // Git
+  git: {
+    enabled: true,
+    remote: "origin",
+    branch: "main",
+    autoPush: true,
+    commitPrefix: "memory:",
+  },
+};`}
+    </Code>
+  </div>);
+}
+
+// ─── TAB 2: SESSION LIFECYCLE ───
+function SessionLifecycleTab() {
+  return (<div>
+    <P>
+      This is the hardest UX problem in the entire system: <B>when does a session start and end?</B> Get
+      this wrong and memory feels either laggy (updates too slow) or intrusive (boundaries feel artificial).
+    </P>
+
+    <Label color={C.amber}>The Session Boundary Problem</Label>
+    <Note color={C.amber} glow={C.amberGlow} icon="⚡">
+      <B>The core tension:</B> Claude Code doesn't have native "session" boundaries. It's a persistent
+      terminal. The user might run 3 commands, walk away for an hour, come back, run 10 more. Where
+      are the session boundaries? We need to define them in a way that feels natural.
+    </Note>
+
+    <Code title="Session boundary detection — src/session/manager.ts" color={C.amber}>
+{`SESSION DETECTION STRATEGY:
+
+A "session" is defined by IDLE GAPS, not by explicit 
+start/end commands. This mirrors how humans experience 
+conversational boundaries — you don't announce "I'm 
+starting a conversation" and "I'm ending a conversation." 
+You just... stop talking for a while.
+
+RULES:
+1. Session STARTS on first message after:
+   - System boot
+   - Previous session ended
+   - Graph was updated (new MAP available)
+
+2. Session ENDS when ANY of:
+   - 5 minutes of idle (no messages in either direction)
+   - User explicitly says "done" / "that's it" / "thanks"
+   - 200 messages reached (force boundary for graph health)
+   - Claude Code process exits
+
+3. Session TRANSITIONS (the critical UX moment):
+   When a session ends:
+   a) Pipeline runs (librarian + dreamer) — ~5-10 seconds
+   b) Graph updates are written
+   c) Git commit + push happens
+   d) New PRIORS + MAP are ready
+   
+   When the user sends the next message:
+   a) System detects: "new session" (idle gap exceeded)
+   b) Loads fresh PRIORS + MAP into agent context
+   c) Agent now has updated memory — seamlessly
+   
+   THE USER NEVER NOTICES. There is no "loading memory" 
+   message. No "session starting" indicator. The agent 
+   just... knows more than it did before the gap.`}
+    </Code>
+
+    <Label color={C.amber}>The Message Buffer and Scribe Trigger</Label>
+    <Code title="src/session/message-buffer.ts" color={C.amber}>
+{`// Dependency: @anthropic-ai/sdk (npm install)
+// const Anthropic = require("@anthropic-ai/sdk")
+
+interface MessageEntry {
+  role: "user" | "assistant";
+  content: string;
+  timestamp: number;
+}
+
+class MessageBuffer {
+  private buffer: MessageEntry[] = [];
+  private scribeQueue: Promise[] = [];  // Promise<void>
+  private summaryChain: string[] = [];
+  private messageCount = 0;
+  private sessionId: string;
+  
+  constructor(sessionId: string) {
+    this.sessionId = sessionId;
+  }
+
+  // Called on every message (user or assistant)
+  async push(entry: MessageEntry) {
+    this.buffer.push(entry);
+    this.messageCount++;
+
+    // Every N messages, fire a scribe IN PARALLEL
+    if (this.buffer.length >= CONFIG.session.scribeInterval) {
+      const fragment = [...this.buffer];
+      this.buffer = []; // Reset buffer immediately
+      
+      // Scribe runs async — does NOT block conversation
+      const scribePromise = this.fireScribe(fragment);
+      this.scribeQueue.push(scribePromise);
+    }
+  }
+
+  private async fireScribe(fragment: MessageEntry[]) {
+    const client = new Anthropic();
+    
+    const response = await client.messages.create({
+      model: CONFIG.models.scribe,
+      max_tokens: 1000,
+      temperature: CONFIG.temperature.scribe,
+      system: SCRIBE_PROMPT,
+      messages: [{
+        role: "user",
+        content: buildScribeInput({
+          map: getCurrentMap(),
+          summaryChain: this.summaryChain,
+          fragment,
+        })
+      }],
+    });
+
+    const output = parseScribeOutput(response);
+    
+    // Append summary to chain for next scribe
+    this.summaryChain.push(output.summary);
+    
+    // Append deltas to session delta file
+    appendDeltas(this.sessionId, output.deltas);
+  }
+
+  // Called when session ends — wait for all scribes
+  async flush(): Promise {  // Promise<void>
+    await Promise.all(this.scribeQueue);
+    
+    // Fire final scribe for remaining buffer
+    if (this.buffer.length > 0) {
+      await this.fireScribe([...this.buffer]);
+      this.buffer = [];
+    }
+  }
+}
+
+// KEY INSIGHT: Scribes are fire-and-forget during conversation.
+// They run in background Promise chains. The main conversation 
+// thread is NEVER blocked. The only time we await them is at 
+// session end, before the Librarian runs.`}
+    </Code>
+
+    <Label color={C.amber}>Complete Session Lifecycle</Label>
+    <Code title="src/index.ts — main orchestrator" color={C.amber}>
+{`LIFECYCLE DIAGRAM:
+
+USER OPENS CLAUDE CODE
+         │
+         ▼
+┌─────────────────────────────────────────────┐
+│  BOOT SEQUENCE                               │
+│                                              │
+│  1. Check if graph/ exists                   │
+│     └─ No? Run first-time init (empty graph) │
+│     └─ Yes? Load manifest.yml                │
+│                                              │
+│  2. Load PRIORS.md + MAP.md                  │
+│                                              │
+│  3. Build agent system prompt:               │
+│     agent-prefix.md + PRIORS + MAP +         │
+│     working_memory + tool definitions        │
+│                                              │
+│  4. Register graph_memory MCP tool           │
+│                                              │
+│  5. Initialize MessageBuffer                 │
+│                                              │
+│  6. Initialize idle timer                    │
+│                                              │
+│  STATUS: Ready. Agent has full memory.       │
+└──────────────────┬──────────────────────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│  ACTIVE SESSION                              │
+│                                              │
+│  On every user message:                      │
+│  ├── Reset idle timer                        │
+│  ├── Push to MessageBuffer                   │
+│  ├── (Buffer fires scribe if count ≥ 5)     │
+│  └── Forward to Claude Code normally         │
+│                                              │
+│  On every assistant response:                │
+│  ├── Push to MessageBuffer                   │
+│  ├── (Buffer fires scribe if count ≥ 5)     │
+│  └── Display to user normally                │
+│                                              │
+│  Scribes running in background:              │
+│  ├── Scribe A processing messages 1-5...     │
+│  ├── Scribe B processing messages 6-10...    │
+│  └── Deltas accumulating in .deltas/         │
+│                                              │
+│  VISUAL: Nothing. User sees normal Claude    │
+│  Code. No indicators. No loading bars.       │
+│  Memory is invisible.                        │
+└──────────────────┬──────────────────────────┘
+                   │
+          ┌────────┴────────┐
+          │                 │
+     Idle timeout      User signals done
+     (5 min)           ("thanks", exit)
+          │                 │
+          └────────┬────────┘
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│  SESSION END PIPELINE                        │
+│                                              │
+│  1. Flush MessageBuffer                      │
+│     └─ await all pending scribes             │
+│     └─ fire final scribe for remaining msgs  │
+│     └─ ~1-3 sec                              │
+│                                              │
+│  2. Run Librarian                            │
+│     └─ input: current graph + all deltas     │
+│     └─ output: updated MAP, nodes, priors    │
+│     └─ ~3-5 sec                              │
+│                                              │
+│  3. Run Dreamer                              │
+│     └─ input: updated graph + deltas         │
+│     └─ + pending dreams                      │
+│     └─ output: dream fragments               │
+│     └─ ~3-5 sec                              │
+│                                              │
+│  4. Process dreams                           │
+│     └─ triage by confidence                  │
+│     └─ incubate or integrate                 │
+│     └─ ~100ms (rule-based)                   │
+│                                              │
+│  5. Regenerate MAP.md                        │
+│     └─ from updated node files               │
+│     └─ include soma markers                  │
+│     └─ include promoted dream insights       │
+│     └─ ~200ms                                │
+│                                              │
+│  6. Git commit + push                        │
+│     └─ diff-based commit message             │
+│     └─ auto-push to remote                   │
+│     └─ ~1-2 sec                              │
+│                                              │
+│  TOTAL: ~8-15 seconds (async, in background) │
+│  User is NOT waiting. Pipeline runs after    │
+│  they've stopped talking.                    │
+│                                              │
+│  7. Mark session complete in manifest        │
+│     └─ update last_session timestamp         │
+│     └─ update hot_nodes list                 │
+└──────────────────┬──────────────────────────┘
+                   │
+                   ▼
+          IDLE / WAITING
+          (User walked away or is reading)
+                   │
+          User sends new message
+                   │
+                   ▼
+┌─────────────────────────────────────────────┐
+│  NEW SESSION BOOT                            │
+│                                              │
+│  1. Detect: idle gap > threshold             │
+│     └─ This is a new session                 │
+│                                              │
+│  2. Reload PRIORS.md + MAP.md                │
+│     └─ These are NOW UPDATED from pipeline   │
+│                                              │
+│  3. Rebuild agent system prompt              │
+│     └─ Agent now has new knowledge           │
+│     └─ New priors shape behavior             │
+│     └─ New soma markers calibrate approach   │
+│     └─ Dream insights available              │
+│                                              │
+│  4. Respond to user's message                │
+│     └─ Agent is smarter than last session    │
+│     └─ No "loading" indicator needed         │
+│     └─ It just... knows.                     │
+└─────────────────────────────────────────────┘`}
+    </Code>
+
+    <Note color={C.green} glow={C.greenGlow} icon="✦">
+      <B>The magic moment:</B> The user stops talking at 3pm. The pipeline runs silently over 10 seconds.
+      At 3:30pm, they come back. They say "actually, about that Tempus positioning..." and the agent
+      responds with context it didn't have in the previous session — updated confidence, new edges,
+      maybe even a dream insight. The user never sees the machinery. Memory just <I>happened</I>.
+    </Note>
+
+    <Label color={C.red}>Edge Cases</Label>
+    <Code title="Session boundary edge cases" color={C.red}>
+{`EDGE CASE 1: User returns during pipeline execution
+  The pipeline takes ~10 seconds. What if user sends a 
+  message 3 seconds after going idle, right as the 
+  pipeline starts?
+
+  SOLUTION: Pipeline is cancellable. On new message:
+  - If pipeline hasn't started → cancel, continue session
+  - If pipeline is mid-execution → let it finish in 
+    background, start new session with OLD graph state.
+    Pipeline results apply to NEXT session start.
+  - Never block the user. Worst case: one session delay 
+    on memory updates.
+
+EDGE CASE 2: Very long session (200+ messages)
+  SOLUTION: Force a "soft boundary" at 200 messages.
+  - Flush all scribes and run librarian
+  - BUT don't reset the conversation
+  - Reload updated MAP into agent context mid-session
+  - Agent gets a memory refresh without the user noticing
+  - This is like the brain's "micro-sleeps" — brief 
+    consolidation without full sleep
+
+EDGE CASE 3: Very short session (1-2 messages)
+  SOLUTION: Don't run full pipeline for trivial sessions.
+  - If < 3 messages, skip librarian/dreamer
+  - Just save the scribe deltas for next session
+  - Next session's librarian processes accumulated deltas
+  - Prevents graph churn from "hey, never mind" sessions
+
+EDGE CASE 4: Multiple rapid sessions
+  User chats for 5 min, walks away 6 min, chats 5 min, 
+  walks away 6 min, repeat.
+  
+  SOLUTION: Debounce pipeline execution.
+  - If last pipeline ran < 10 minutes ago, defer
+  - Accumulate deltas across micro-sessions
+  - Run pipeline on next qualifying idle gap
+  - Prevents rapid-fire librarian calls that waste money`}
+    </Code>
+  </div>);
+}
+
+// ─── TAB 3: GRAPH RETRIEVAL ───
+function GraphRetrievalTab() {
+  return (<div>
+    <P>
+      Every piece of information needs to be reachable within 1-2 hops. Here's exactly how
+      retrieval works, from the MCP tool definition down to the file I/O.
+    </P>
+
+    <Label color={C.accent}>The MCP Tool — What Claude Code Sees</Label>
+    <Code title="src/tools/graph-memory.ts — MCP tool definition" color={C.accent}>
+{`// This is the ONLY tool the agent needs for memory
+// Registered as an MCP tool in Claude Code
+
+const graphMemoryTool = {
+  name: "graph_memory",
+  description: \`Access your knowledge graph. Use when you 
+    need deeper detail on a topic in your memory context, 
+    or to search for something you might know about.
+    
+    Actions:
+    - read_node: Load full detail for a specific node
+    - search: Semantic search across all nodes
+    - list_edges: Get all connections for a node
+    - read_dream: Load a dream insight for exploration
+    - write_note: Add a working memory item\`,
+  input_schema: {
+    type: "object",
+    properties: {
+      action: {
+        type: "string",
+        enum: [
+          "read_node", 
+          "search", 
+          "list_edges", 
+          "read_dream",
+          "write_note"
+        ]
+      },
+      path: {
+        type: "string",
+        description: "Node path (for read_node, list_edges)"
+      },
+      query: {
+        type: "string",
+        description: "Search query (for search)"
+      },
+      note: {
+        type: "string",
+        description: "Working memory note (for write_note)"
+      }
+    },
+    required: ["action"]
+  }
+};`}
+    </Code>
+
+    <Label color={C.accent}>Retrieval Flow — How Data Connects</Label>
+    <Code title="Complete retrieval architecture" color={C.accent}>
+{`THREE RETRIEVAL PATHWAYS:
+
+PATH 1: DIRECT (from MAP → node file)
+════════════════════════════════════════
+Agent sees in MAP.md:
+  acellus/christianacare: "$157M RFP..." confidence:0.85
+
+Agent calls:
+  graph_memory(action="read_node", path="acellus/christianacare")
+
+System resolves:
+  path "acellus/christianacare" 
+    → file: graph/nodes/acellus/christianacare.md
+    → read file, return content
+    → ~2ms latency
+
+This is O(1) retrieval. The MAP path IS the file path.
+No search. No index. Direct mapping.
+
+
+PATH 2: EDGE TRAVERSAL (from MAP → edges → node files)
+════════════════════════════════════════
+Agent sees in MAP.md:
+  acellus/christianacare: "..." →[acellus/ace, acellus/mcode]
+
+Agent calls:
+  graph_memory(action="list_edges", path="acellus/christianacare")
+
+System returns:
+  {
+    "edges": [
+      { "target": "acellus/ace", "type": "depends_on", 
+        "weight": 0.9, "reasoning": "..." },
+      { "target": "acellus/mcode", "type": "depends_on",
+        "weight": 0.7 }
+    ],
+    "anti_edges": [
+      { "target": "acellus/embedded_engineer",
+        "reason": "Strategy abandoned" }
+    ]
+  }
+
+Agent then calls:
+  graph_memory(action="read_node", path="acellus/ace")
+
+This is O(edges) — typically 2-4 hops max.
+The edge data comes from the node's frontmatter,
+already parsed at index build time.
+
+
+PATH 3: SEMANTIC SEARCH (from query → index → node files)
+════════════════════════════════════════
+Agent encounters topic not in MAP or unknown connection.
+
+Agent calls:
+  graph_memory(action="search", query="pharmacy medication data")
+
+System resolves:
+  1. Load .index.json (pre-built, in memory after first load)
+  2. Score each node's gist + tags against query
+     (TF-IDF or simple keyword overlap — no embeddings needed)
+  3. Return top-k matches with relevance scores
+
+  {
+    "results": [
+      { "path": "acellus/ace", "relevance": 0.7,
+        "gist": "Clinical data extraction...",
+        "match_reason": "medication reconciliation in gist" },
+      { "path": "knowledge/fhir_resources", "relevance": 0.5,
+        "gist": "FHIR resource types...",
+        "match_reason": "MedicationRequest tag" }
+    ]
+  }
+
+Agent then reads relevant nodes as needed.
+
+TOTAL LATENCY for any retrieval: <50ms
+(All file I/O, no network calls, no DB queries)`}
+    </Code>
+
+    <Label color={C.accent}>The Index — How Search Works Without Embeddings</Label>
+    <Code title="src/graph/index-builder.ts" color={C.accent}>
+{`// .index.json is rebuilt after every librarian run
+// It's a flat lookup optimized for fast text search
+
+interface IndexEntry {
+  path: string;
+  gist: string;
+  tags: string[];          // extracted from frontmatter
+  keywords: string[];      // extracted from gist + title
+  edges: string[];         // target paths
+  anti_edges: string[];
+  confidence: number;
+  soma_intensity: number;
+  last_accessed: string;
+  access_count: number;
+}
+
+// Search algorithm — no vector DB needed
+function search(query: string, index: IndexEntry[]): SearchResult[] {
+  const queryTokens = tokenize(query.toLowerCase());
+  
+  return index
+    .map(entry => {
+      // Score = weighted combination of matches
+      const gistScore = overlap(queryTokens, 
+        tokenize(entry.gist)) * 3;         // gist weighted 3x
+      const tagScore = overlap(queryTokens, 
+        entry.tags) * 2;                    // tags weighted 2x
+      const keywordScore = overlap(queryTokens, 
+        entry.keywords) * 1;               // keywords 1x
+      
+      // Boost by confidence and recency
+      const relevance = (gistScore + tagScore + keywordScore) 
+        * entry.confidence 
+        * recencyBoost(entry.last_accessed);
+      
+      return { path: entry.path, relevance, gist: entry.gist };
+    })
+    .filter(r => r.relevance > 0.1)
+    .sort((a, b) => b.relevance - a.relevance)
+    .slice(0, 5);
+}
+
+// WHY NO EMBEDDINGS:
+// 1. The graph is small (50-100 nodes). Linear scan is <1ms.
+// 2. Keyword overlap on curated gists is surprisingly accurate.
+// 3. No dependency on embedding models or vector DBs.
+// 4. The index rebuilds in <100ms — no incremental update complexity.
+// 5. If you WANT embeddings later, swap search() — the rest is unchanged.`}
+    </Code>
+
+    <Label color={C.accent}>Node File Resolution</Label>
+    <Code title="How paths map to files" color={C.accent}>
+{`PATH RESOLUTION:
+
+  Node path:    "acellus/christianacare"
+  File path:    graph/nodes/acellus/christianacare.md
+  
+  Node path:    "oliver/error_recovery"  
+  File path:    graph/nodes/oliver/error_recovery.md
+  
+  Node path:    "_meta/decision_heuristics"
+  File path:    graph/nodes/_meta/decision_heuristics.md
+  
+  Node path:    "insight/unified_translation"
+  File path:    graph/nodes/insight/unified_translation.md
+  
+  Archived:     "fitness/meal_prep_week3"
+  File path:    graph/archive/fitness/meal_prep_week3.md
+
+RULE: path segments map directly to directory/filename.
+No database. No ID lookup table. The filesystem IS the index.
+
+This means:
+- ls graph/nodes/ shows you the entire knowledge graph
+- cat graph/nodes/acellus/ace.md gives you the full node
+- You can edit nodes with any text editor
+- git diff shows exactly what changed
+- Backups are just directory copies`}
+    </Code>
+  </div>);
+}
+
+// ─── TAB 4: GIT AUTOMATION ───
+function GitTab() {
+  return (<div>
+    <P>
+      Every graph mutation is tracked in git. This gives us version history, diff-based commit
+      messages, rollback capability, and GitHub sync — all automatic.
+    </P>
+
+    <Label color={C.purple}>Git Strategy</Label>
+    <Code title="src/git/auto-commit.ts" color={C.purple}>
+{`GIT WORKFLOW:
+
+The graph/ directory is a git repo (or subdirectory of one).
+After every librarian run, the git module:
+
+1. STAGE all changes in graph/
+   git add graph/
+
+2. GENERATE commit message from diff
+   - Parse git diff --stat for changed files
+   - Categorize: new nodes, updated nodes, archived nodes,
+     MAP changes, PRIORS changes, dream fragments
+   - Build human-readable commit message
+
+3. COMMIT with structured message
+   git commit -m "memory: session 47 — ..."
+
+4. PUSH to remote (if configured)
+   git push origin main
+
+COMMIT MESSAGE FORMAT:
+────────────────────────
+memory: session 47 — 3 updates, 1 new node, 1 archived
+
+New:
+  + nodes/insight/unified_translation.md (dream-derived)
+
+Updated:
+  ~ nodes/acellus/christianacare.md (soma recalibrated)
+  ~ nodes/oliver/errors.md (confidence 0.7→0.8)
+  ~ MAP.md (regenerated, 48 nodes)
+
+Archived:
+  → archive/fitness/meal_prep_week3.md (decayed below 0.15)
+
+Priors:
+  ~ PRIORS.md (1 new prior, 1 decayed)
+
+Dreams:
+  + dreams/pending/dream_042.json
+  → dreams/integrated/dream_039.json (promoted)
+────────────────────────`}
+    </Code>
+
+    <Label color={C.purple}>Implementation</Label>
+    <Code title="src/git/auto-commit.ts — core logic" color={C.purple}>
+{`// Dependency: simple-git (npm install)
+// const simpleGit = require("simple-git")
+
+const git = simpleGit(CONFIG.paths.graphRoot);
+
+export async function autoCommit(sessionId: string) {
+  // 1. Stage all graph changes
+  await git.add(".");
+  
+  // 2. Check if there are changes to commit
+  const status = await git.status();
+  if (status.isClean()) return;
+  
+  // 3. Build commit message from diff
+  const diff = await git.diff(["--stat", "--cached"]);
+  const message = buildCommitMessage(sessionId, status, diff);
+  
+  // 4. Commit
+  await git.commit(message);
+  
+  // 5. Push (non-blocking)
+  if (CONFIG.git.autoPush) {
+    git.push(CONFIG.git.remote, CONFIG.git.branch)
+      .catch(err => console.warn("Push failed:", err.message));
+  }
+}
+
+function buildCommitMessage(
+  sessionId: string, 
+  status: StatusResult, 
+  diff: string
+): string {
+  const created = status.created
+    .filter(f => f.startsWith("nodes/"));
+  const modified = status.modified
+    .filter(f => f.startsWith("nodes/"));
+  const renamed = status.renamed
+    .filter(f => f.to.startsWith("archive/")); // archived
+  
+  const parts = [
+    "memory: session " + sessionId,
+    "  " + modified.length + " updated, ",
+    "  " + created.length + " new, ",
+    "  " + renamed.length + " archived",
+  ];
+  
+  if (created.length) {
+    parts.push("\\nNew:");
+    created.forEach(f => parts.push("  + " + f));
+  }
+  if (modified.length) {
+    parts.push("\\nUpdated:");
+    modified.forEach(f => parts.push("  ~ " + f));
+  }
+  
+  return parts.join("\\n");
+}`}
+    </Code>
+
+    <Label color={C.purple}>Recovery — Git-Based Rollback</Label>
+    <Code title="src/git/recovery.ts" color={C.purple}>
+{`RECOVERY SCENARIOS:
+
+1. BAD LIBRARIAN RUN (hallucinated updates)
+   
+   npm run revert
+   # Shows last 10 commits with diffs
+   # Select commit to revert to
+   # Equivalent to: git revert HEAD
+   # Keeps history, doesn't destroy anything
+
+2. MANUAL INSPECTION
+
+   git log --oneline graph/MAP.md
+   # See every version of the MAP
+   
+   git diff HEAD~3 HEAD -- graph/nodes/acellus/ace.md
+   # See how a specific node changed over 3 sessions
+   
+   git show HEAD~5:graph/MAP.md
+   # View MAP as it was 5 sessions ago
+
+3. BRANCH-BASED EXPERIMENTATION
+
+   git checkout -b experiment/new-strategy
+   # Manually edit nodes to test a "what if"
+   # Run the agent with this alternative graph
+   # Merge back to main if the experiment works
+   # Delete branch if not
+
+4. CORRUPTION RECOVERY
+
+   # If graph is in bad state:
+   git stash          # save current state
+   git checkout main  # reset to last good state
+   
+   # Or nuclear option:
+   git log --all --oneline
+   git checkout [known-good-sha] -- graph/
+   git commit -m "memory: recovered to session N"
+
+GIT IS THE SAFETY NET. The graph is just files.
+Files in git are immortal. You can always go back.`}
+    </Code>
+
+    <Note color={C.green} glow={C.greenGlow} icon="📦">
+      <B>GitHub integration:</B> With autoPush enabled, your graph is backed up to GitHub after every
+      session. You can view your agent's memory evolution on GitHub like any codebase. The diff view
+      is particularly powerful — you can see exactly what changed in the agent's understanding after
+      each conversation.
+    </Note>
+  </div>);
+}
+
+// ─── TAB 5: PARALLEL SCRIBES ───
+function ParallelScribesTab() {
+  return (<div>
+    <P>
+      The scribe pipeline must run in parallel with the conversation and never block it.
+      Here's the exact concurrency model.
+    </P>
+
+    <Label color={C.cyan}>Concurrency Architecture</Label>
+    <Code title="How scribes run without blocking" color={C.cyan}>
+{`CONCURRENCY MODEL:
+
+The system runs in a single Node.js process.
+Scribes use async/await — they're non-blocking I/O 
+(HTTP calls to Anthropic API). The event loop handles 
+concurrency naturally. No threads needed.
+
+TIMELINE (20-message session):
+═══════════════════════════════════════════════════
+
+Time  Main Thread          Background (async)
+────  ────────────────     ──────────────────────
+0s    User msg 1           
+1s    Agent responds        
+2s    User msg 2           
+3s    Agent responds        
+4s    User msg 3           
+5s    Agent responds        ← buffer hits 5
+5s    Buffer fires          Scribe A starts...
+6s    User msg 4            Scribe A calling API...
+7s    Agent responds         Scribe A calling API...
+8s    User msg 5            Scribe A calling API...
+9s    Agent responds         
+10s   User msg 6            Scribe A returns ✓
+10s   Buffer fires          Scribe B starts...
+11s   User msg 7            Scribe B calling API...
+...   (continues)           (continues in parallel)
+
+CRITICAL PROPERTY: 
+  At no point does the main thread await a scribe.
+  Scribes are fire-and-forget Promise chains.
+  The only await is at session end (flush).
+
+MEMORY SAFETY:
+  Each scribe gets a COPY of the buffer contents.
+  The buffer is cleared immediately after copy.
+  No shared mutable state between scribes.
+  Scribes can complete in any order — deltas are 
+  timestamped and sorted by the Librarian.`}
+    </Code>
+
+    <Label color={C.cyan}>Scribe-to-Librarian Handoff</Label>
+    <Code title="The delta accumulation pattern" color={C.cyan}>
+{`DELTA FILE STRUCTURE:
+
+graph/.deltas/session_047.json:
+{
+  "session_id": "047",
+  "started_at": "2025-02-25T14:00:00Z",
+  "ended_at": "2025-02-25T14:32:00Z",
+  "message_count": 20,
+  "scribes": [
+    {
+      "scribe_id": "A",
+      "fragment_range": [1, 5],
+      "completed_at": "2025-02-25T14:05:12Z",
+      "summary": "Discussed Oliver error handling patterns. 
+        User wants graceful degradation over retry loops.",
+      "deltas": [
+        { "type": "create_node", "id": "oliver/error_recovery", ... },
+        { "type": "update_stance", "id": "oliver/orchestration", ... }
+      ]
+    },
+    {
+      "scribe_id": "B", 
+      "fragment_range": [6, 10],
+      "completed_at": "2025-02-25T14:12:30Z",
+      "summary": "Pivoted to ChristianaCare timeline. User 
+        expressed frustration but commitment.",
+      "deltas": [
+        { "type": "soma_signal", "target": "acellus/christianacare", ... },
+        { "type": "create_node", "id": "acellus/rfp_timeline", ... }
+      ]
+    },
+    {
+      "scribe_id": "C",
+      "fragment_range": [11, 15], 
+      "completed_at": "2025-02-25T14:20:45Z",
+      "summary": "Connected Oliver failure patterns to clinical 
+        pipeline resilience. Cross-domain insight.",
+      "deltas": [
+        { "type": "create_edge", 
+          "from": "oliver/error_recovery", 
+          "to": "acellus/ace", 
+          "edge_type": "pattern_transfer", ... }
+      ]
+    },
+    {
+      "scribe_id": "D",
+      "fragment_range": [16, 20],
+      "completed_at": "2025-02-25T14:32:15Z",
+      "summary": "Wrapped up. User confirmed embedded engineer 
+        model is dead. Discussed next steps on RFP.",
+      "deltas": [
+        { "type": "create_anti_edge",
+          "from": "acellus/go_to_market",
+          "to": "acellus/embedded_engineer", ... },
+        { "type": "update_confidence", 
+          "id": "acellus/christianacare", 
+          "new_value": 0.85, ... }
+      ]
+    }
+  ]
+}
+
+HANDOFF TO LIBRARIAN:
+  The Librarian receives this entire file.
+  Scribes are already sorted by fragment_range.
+  Summary chain provides narrative continuity.
+  Deltas are the raw material for consolidation.`}
+    </Code>
+
+    <Label color={C.cyan}>API Call Concurrency Limits</Label>
+    <Code title="Rate limiting and batching" color={C.cyan}>
+{`ANTHROPIC API CONSIDERATIONS:
+
+Rate limits (tier-dependent):
+  - Haiku: generous RPM, low cost
+  - A 20-message session = 4 scribe calls
+  - All 4 could theoretically run simultaneously 
+    if the conversation is fast enough
+  - In practice: scribes fire sequentially every 
+    ~2 minutes, so no concurrency issues
+
+COST PER SCRIBE CALL:
+  Input: ~1500 tokens (MAP + summary chain + 5 messages)
+  Output: ~300 tokens (deltas + summary)
+  Cost at Haiku pricing: ~$0.001 per scribe
+
+  4 scribes per session = ~$0.004
+  
+  This is negligible. You could run 1000 sessions 
+  for $4 in scribe costs.
+
+FAILURE HANDLING:
+  If a scribe API call fails:
+  - Retry once after 2 second delay
+  - If retry fails: log the failure, skip this fragment
+  - The Librarian works with whatever deltas it has
+  - Missing a 5-message fragment is not catastrophic
+  - The information will likely be captured in 
+    adjacent scribes' summary chains
+
+  If the Librarian API call fails:
+  - Retry once
+  - If retry fails: save deltas, defer to next session
+  - Next session's librarian processes accumulated deltas
+  - The graph state is always the last SUCCESSFUL update
+  - Git ensures we never lose the last good state`}
+    </Code>
+  </div>);
+}
+
+// ─── TAB 6: IMPLEMENTATION STEPS ───
+function ImplementationTab() {
+  return (<div>
+    <P>
+      Here's the build order. Each phase is independently testable and adds value.
+      You can start using the system after Phase 1 — each subsequent phase adds capability.
+    </P>
+
+    <Label color={C.green}>Phase 1: Static Graph (Day 1)</Label>
+    <Code title="Minimum viable memory" color={C.green}>
+{`GOAL: Agent has persistent memory across Claude Code sessions.
+      No pipeline. Manual graph management.
+
+BUILD:
+  1. Create graph/ directory structure
+  2. Write initial MAP.md by hand (your current context)
+  3. Write initial PRIORS.md by hand (behavioral guidelines)
+  4. Create graph_memory MCP tool (read_node + search)
+  5. Create agent-prefix.md template that injects PRIORS + MAP
+  6. Initialize git repo in graph/
+
+TEST:
+  - Start Claude Code with the custom system prompt
+  - Ask it about something in the MAP
+  - Ask it to read_node for detail
+  - Verify it behaves according to PRIORS
+  - Manually update MAP.md, restart, verify changes
+
+YOU NOW HAVE: Persistent memory. Manual updates.
+Time: ~4 hours. Cost: $0.`}
+    </Code>
+
+    <Label color={C.green}>Phase 2: Scribe Pipeline (Day 2-3)</Label>
+    <Code title="Automated observation" color={C.green}>
+{`GOAL: Conversations are automatically observed.
+      Deltas accumulate. Still manual consolidation.
+
+BUILD:
+  1. Implement MessageBuffer with scribe triggering
+  2. Write scribe.md prompt
+  3. Implement scribe.ts (API call + delta output)
+  4. Implement delta file storage
+  5. Wire message interception in Claude Code
+
+TEST:
+  - Have a conversation
+  - Check .deltas/ for scribe output
+  - Verify deltas capture key information
+  - Verify conversation was not slowed
+
+YOU NOW HAVE: Automated observation. Scribes running 
+in parallel. Delta pile accumulating.
+Time: ~8 hours. Cost: ~$0.004/session.`}
+    </Code>
+
+    <Label color={C.green}>Phase 3: Librarian (Day 3-4)</Label>
+    <Code title="Automated consolidation" color={C.green}>
+{`GOAL: Graph self-updates after each session.
+      MAP.md regenerates automatically.
+
+BUILD:
+  1. Write librarian.md prompt
+  2. Implement librarian.ts (full consolidation pipeline)
+  3. Implement map-generator.ts (regenerate MAP from nodes)
+  4. Implement session manager (idle detection → trigger)
+  5. Implement decay.ts (score calculation + archival)
+  6. Wire session end → librarian → map regeneration
+
+TEST:
+  - Have a conversation about a new topic
+  - Wait for session end (5 min idle)
+  - Check: new nodes created? MAP updated? Git committed?
+  - Start new session: does agent know the new topic?
+  - Have 5 sessions. Check decay is working.
+
+YOU NOW HAVE: Self-updating memory. Full scribe→librarian 
+pipeline. Automatic git history.
+Time: ~12 hours. Cost: ~$0.025/session.`}
+    </Code>
+
+    <Label color={C.green}>Phase 4: Soma + Priors (Day 5-6)</Label>
+    <Code title="Behavioral and emotional layers" color={C.green}>
+{`GOAL: Agent has implicit behavioral memory and 
+      emotional calibration on topics.
+
+BUILD:
+  1. Add soma signal detection to scribe prompt
+  2. Implement soma.ts (marker management)
+  3. Add soma compression to MAP generator
+  4. Implement priors-extractor.ts 
+  5. Add priors extraction to librarian pipeline
+  6. Update agent-prefix.md to load PRIORS before MAP
+
+TEST:
+  - Have an enthusiastic conversation about a topic
+  - Check: did scribe detect positive soma signals?
+  - Check: did librarian calibrate soma on that node?
+  - New session: does agent approach that topic differently?
+  - After 5+ sessions: are priors forming?
+
+YOU NOW HAVE: Implicit memory + emotional calibration.
+Time: ~10 hours. Cost: unchanged.`}
+    </Code>
+
+    <Label color={C.green}>Phase 5: Dream Phase (Day 7-8)</Label>
+    <Code title="Creative recombination" color={C.green}>
+{`GOAL: System generates novel insights through 
+      high-temperature creative recombination.
+
+BUILD:
+  1. Write dreamer.md prompt
+  2. Implement dreamer.ts (temp=1.0 API call)
+  3. Implement dream triage (confidence-based routing)
+  4. Implement dream incubation (cross-session persistence)
+  5. Implement dream promotion to MAP
+  6. Wire dreamer into post-librarian pipeline
+
+TEST:
+  - Have 3 sessions across different topics
+  - Check: are dream fragments being generated?
+  - Check: do any pending dreams get reinforced?
+  - Check: after promotion, does agent surface the insight?
+  - Quality check: are the dreams actually useful?
+
+YOU NOW HAVE: The complete system. All divergences addressed.
+Time: ~8 hours. Cost: ~$0.055/session.`}
+    </Code>
+
+    <Label color={C.amber}>Phase 6: Polish + Harden (Day 9-10)</Label>
+    <Code title="Production readiness" color={C.amber}>
+{`GOAL: Edge cases handled, monitoring in place.
+
+BUILD:
+  1. Implement recovery.ts (git-based rollback)
+  2. Add pipeline error handling + retry logic
+  3. Add session debouncing for rapid sessions
+  4. Add mid-session memory refresh for 200+ msg sessions
+  5. Add graph health monitoring (node count, token budget)
+  6. Add manual override commands:
+     - npm run consolidate (force librarian)
+     - npm run dream (force dreamer)
+     - npm run revert (rollback)
+     - npm run status (graph health report)
+  7. Write tests for scribe/librarian/decay
+
+TOTAL BUILD TIME: ~50-60 hours across 10 days
+ONGOING COST: ~$0.055 per session (~$1.65/month at 1/day)`}
+    </Code>
+
+    <Note color={C.purple} glow={C.purpleGlow} icon="🔑">
+      <B>The key principle:</B> Each phase is independently valuable and testable. Phase 1 alone gives
+      you persistent agent memory. Each subsequent phase is additive. You don't need to build the
+      whole thing to start getting value — and each piece you add makes the system meaningfully
+      smarter.
+    </Note>
+
+    <Label color={C.red}>Claude Code Integration Specifics</Label>
+    <Code title="How this wires into Claude Code" color={C.red}>
+{`CLAUDE CODE INTEGRATION:
+
+Claude Code supports custom system prompts via 
+CLAUDE.md files and MCP tool servers.
+
+OPTION A: MCP Server (recommended)
+─────────────────────────────────
+  graph-memory runs as a local MCP server.
+  Claude Code connects to it via .mcp.json config.
+  
+  The MCP server:
+  - Injects PRIORS + MAP into system context on session start
+  - Exposes graph_memory tool
+  - Intercepts messages for the scribe pipeline
+  - Manages session lifecycle
+  
+  .mcp.json:
+  {
+    "mcpServers": {
+      "graph-memory": {
+        "command": "node",
+        "args": ["./graph-memory/dist/mcp-server.js"],
+        "env": {
+          "ANTHROPIC_API_KEY": "sk-..."
+        }
+      }
+    }
+  }
+
+OPTION B: CLAUDE.md + Background Process
+─────────────────────────────────────────
+  Simpler but less integrated.
+  
+  1. CLAUDE.md includes:
+     - Contents of PRIORS.md
+     - Contents of MAP.md  
+     - Tool instructions for graph_memory
+  
+  2. A separate background process:
+     - Watches Claude Code's conversation log
+     - Fires scribes on message accumulation
+     - Runs librarian on idle detection
+     - Updates CLAUDE.md after consolidation
+  
+  This works TODAY with no custom MCP setup.
+  Less elegant but fully functional.
+
+OPTION C: Claude Code Hooks (if/when available)
+─────────────────────────────────────────────────
+  Claude Code may support pre/post message hooks.
+  If so, wire directly:
+  - pre_message: inject fresh PRIORS + MAP
+  - post_message: push to message buffer
+  - on_idle: trigger pipeline`}
+    </Code>
+  </div>);
+}
+
+// ─── MAIN ───
+const tabs = [
+  { id: "vision", label: "Vision", icon: "🔭" },
+  { id: "structure", label: "Project", icon: "📁" },
+  { id: "session", label: "Sessions", icon: "⏱" },
+  { id: "retrieval", label: "Retrieval", icon: "🔍" },
+  { id: "git", label: "Git", icon: "📦" },
+  { id: "parallel", label: "Scribes", icon: "⚡" },
+  { id: "impl", label: "Build Plan", icon: "🔨" },
+];
+
+export default function ImplementationGuide() {
+  const [active, setActive] = useState("vision");
+  const render = () => {
+    switch (active) {
+      case "vision": return <VisionTab />;
+      case "structure": return <ProjectStructureTab />;
+      case "session": return <SessionLifecycleTab />;
+      case "retrieval": return <GraphRetrievalTab />;
+      case "git": return <GitTab />;
+      case "parallel": return <ParallelScribesTab />;
+      case "impl": return <ImplementationTab />;
+      default: return null;
+    }
+  };
+
+  return (
+    <div style={{ background: C.bg, minHeight: "100vh", color: C.text, fontFamily: sans }}>
+      <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+      <div style={{ padding: "22px 22px 0", borderBottom: `1px solid ${C.border}` }}>
+        <div style={{ fontSize: 10, fontWeight: 800, letterSpacing: "0.14em", textTransform: "uppercase", color: C.accent, marginBottom: 4 }}>Graph Memory System</div>
+        <h1 style={{ fontSize: 21, fontWeight: 800, margin: "0 0 3px", letterSpacing: "-0.02em" }}>Agent Graph Memory — Vision + Implementation</h1>
+        <p style={{ fontSize: 12.5, color: C.textMuted, margin: "0 0 16px", lineHeight: 1.5 }}>From moonshot to engineering spec — persistent, self-evolving memory for AI agents.</p>
+        <div style={{ display: "flex", gap: 0, marginBottom: -1, overflowX: "auto" }}>
+          {tabs.map(t => (
+            <button key={t.id} onClick={() => setActive(t.id)} style={{
+              background: active === t.id ? C.surface : "transparent",
+              color: active === t.id ? C.text : C.textMuted,
+              border: active === t.id ? `1px solid ${C.border}` : "1px solid transparent",
+              borderBottom: active === t.id ? `1px solid ${C.surface}` : `1px solid ${C.border}`,
+              borderRadius: "6px 6px 0 0", padding: "8px 13px", fontSize: 12,
+              fontWeight: active === t.id ? 700 : 500, cursor: "pointer",
+              transition: "all 0.15s", fontFamily: "inherit", display: "flex", gap: 5, alignItems: "center", whiteSpace: "nowrap",
+            }}>
+              <span style={{ fontSize: 12 }}>{t.icon}</span>{t.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div style={{ padding: "20px 22px 40px", maxWidth: 780 }}>{render()}</div>
+    </div>
+  );
+}
