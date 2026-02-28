@@ -1,25 +1,28 @@
 #!/usr/bin/env node
 /**
- * Stop hook — captures each user/assistant exchange and appends to the buffer.
+ * Stop hook — captures each assistant response and appends to the buffer.
  *
  * Receives JSON on stdin with:
  *   - last_assistant_message: the assistant's response text
- *   - transcript_path: path to the session JSONL for extracting the user message
  *   - session_id: Claude Code session ID
  *
- * Appends directly to conversation.jsonl (does NOT use BufferWatcher, which
- * resets the file on construction). Fires the scribe when the buffer reaches
- * the configured threshold.
+ * Appends directly to conversation.jsonl. When buffer reaches threshold,
+ * rotates to snapshot and writes .scribe-pending marker for subagent dispatch.
  */
 import fs from "fs";
 import path from "path";
+import { fileURLToPath } from "url";
 import { CONFIG, isGraphInitialized } from "../graph-memory/config.js";
-import { fireScribe, saveScribeResult } from "../graph-memory/pipeline/scribe.js";
+import { detectProject } from "../graph-memory/project.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const AGENTS_DIR = path.resolve(__dirname, "../../agents");
 
 interface StopHookInput {
   session_id: string;
   last_assistant_message: string;
   hook_event_name: string;
+  cwd?: string;
 }
 
 interface BufferEntry {
@@ -61,7 +64,7 @@ async function main() {
   const logPath = CONFIG.paths.conversationLog;
   const now = new Date().toISOString();
 
-  // Append assistant message (user message is captured by the UserPromptSubmit hook)
+  // Append assistant message
   const assistantEntry: BufferEntry = { role: "assistant", content: truncate(input.last_assistant_message), timestamp: now };
   fs.appendFileSync(logPath, JSON.stringify(assistantEntry) + "\n");
 
@@ -70,60 +73,43 @@ async function main() {
   const bufferLines = bufferContent.split("\n").filter(Boolean);
   const messageCount = bufferLines.length;
 
-  // Fire scribe every N messages (counting individual messages, not pairs)
-  const threshold = CONFIG.session.scribeInterval * 2; // scribeInterval is per-exchange, we have 2 messages per exchange
+  // Rotate and create scribe-pending marker every N messages
+  const threshold = CONFIG.session.scribeInterval * 2;
   if (messageCount >= threshold) {
-    // Format as readable conversation for the scribe
-    const fragment = bufferLines.map(line => {
-      try {
-        const entry: BufferEntry = JSON.parse(line);
-        return `[${entry.role.toUpperCase()}]: ${entry.content}`;
-      } catch {
-        return line;
-      }
-    }).join("\n\n");
-
     // Rotate: save snapshot, clear buffer
     const snapshotName = `snapshot_${Date.now()}.jsonl`;
-    fs.writeFileSync(path.join(bufferDir, snapshotName), bufferContent + "\n");
+    const snapshotPath = path.join(bufferDir, snapshotName);
+    fs.writeFileSync(snapshotPath, bufferContent + "\n");
     fs.writeFileSync(logPath, "");
 
-    // Derive scribe ID from session
     const sessionId = input.session_id || `hook_${Date.now()}`;
-    const existingDeltas = fs.existsSync(CONFIG.paths.deltas)
-      ? fs.readdirSync(CONFIG.paths.deltas).filter(f => f.startsWith(sessionId)).length
-      : 0;
-    const scribeId = `S${String(existingDeltas + 1).padStart(2, "0")}`;
 
-    let map = "_No MAP loaded._";
-    if (fs.existsSync(CONFIG.paths.map)) {
-      map = fs.readFileSync(CONFIG.paths.map, "utf-8");
+    // Detect project for scribe context
+    const cwd = input.cwd || process.cwd();
+    const project = detectProject(cwd);
+
+    // Write .scribe-pending marker for subagent dispatch
+    const marker: Record<string, any> = {
+      snapshotPath,
+      sessionId,
+      graphRoot: CONFIG.paths.graphRoot,
+      createdAt: new Date().toISOString(),
+    };
+    if (project.name !== "global") {
+      marker.project = project.name;
     }
+    fs.writeFileSync(CONFIG.paths.scribePending, JSON.stringify(marker));
+    console.error(`[graph-memory] Buffer rotated (${messageCount} messages). Dispatching scribe.`);
 
-    // Fire scribe (async but we await it before exiting)
-    try {
-      const result = await fireScribe({
-        fragment,
-        map,
-        summaryChain: [],
-        sessionId,
-        scribeId,
-        fragmentRange: [1, messageCount],
-      });
-
-      saveScribeResult({
-        sessionId,
-        scribeId,
-        fragmentRange: [1, messageCount],
-        result,
-      });
-    } catch (err: any) {
-      // Non-fatal — buffer was already rotated, scribe just didn't run
-      console.error(`[graph-memory] Scribe failed: ${err.message}`);
-    }
+    // Emit dispatch instruction to stdout — Claude sees this and launches the scribe mid-session
+    const scribePromptPath = path.join(AGENTS_DIR, "memory-scribe.md");
+    const graphRoot = CONFIG.paths.graphRoot;
+    const projectCtx = marker.project ? ` Current project: ${marker.project} (use this for classifying deltas as global vs project-scoped).` : "";
+    console.log(`<graph-memory-action>SCRIBE PENDING: Use the Task tool with subagent_type="general-purpose", model="sonnet", and run_in_background=true. Prompt: "Read the scribe instructions at ${scribePromptPath}, then follow them. Snapshot file: ${snapshotPath}, session ID: ${sessionId}, graph root: ${graphRoot}.${projectCtx} Read the snapshot, read MAP.md, then read only the 2-5 existing nodes most relevant to the conversation for context. Extract deltas, write to .deltas/ directory, then remove .scribe-pending marker."</graph-memory-action>`);
   }
 }
 
-main().catch(() => {
+main().catch((err) => {
+  console.error(`[graph-memory] on-assistant-response hook error: ${err.message}`);
   process.exit(0);
 });

@@ -8,10 +8,14 @@ import { activityBus } from "./events.js";
 import { safePath, countFiles as countFilesUtil } from "./utils.js";
 import { listCommits, revertTo, autoCommit } from "./git.js";
 import { somaBoost } from "./soma.js";
-import { BufferWatcher } from "./buffer-watcher.js";
-import { runLibrarian, buildLibrarianInput } from "./pipeline/librarian.js";
-import { runDreamer, buildDreamerInput } from "./pipeline/dreamer.js";
+import { applyDeltas } from "./pipeline/mechanical-apply.js";
+import { buildLibrarianInput } from "./pipeline/librarian.js";
+import { buildDreamerInput } from "./pipeline/dreamer.js";
+import { fullRegenerateMAP, rebuildIndex, validateEdgeType } from "./pipeline/graph-ops.js";
+import { runDecay } from "./pipeline/decay.js";
 import { updateManifest } from "./manifest.js";
+import { clearConsolidationPending } from "./dirty-state.js";
+import { readActiveProject } from "./project.js";
 
 // --- Index cache ---
 let indexCache: { data: any[]; mtime: number } | null = null;
@@ -32,16 +36,6 @@ function loadIndex(): any[] {
   return data;
 }
 
-// Singleton buffer watcher for log_exchange
-let bufferWatcher: BufferWatcher | null = null;
-
-function getBufferWatcher(): BufferWatcher {
-  if (!bufferWatcher) {
-    bufferWatcher = new BufferWatcher();
-  }
-  return bufferWatcher;
-}
-
 // Tool handler for graph_memory
 export async function handleGraphMemory(args: {
   action: string;
@@ -49,7 +43,15 @@ export async function handleGraphMemory(args: {
   query?: string;
   note?: string;
   graphRoot?: string;
-  messages?: Array<{ role: string; content: string }>;
+  gist?: string;
+  content?: string;
+  title?: string;
+  tags?: string[];
+  confidence?: number;
+  edges?: Array<{ target: string; type: string; weight?: number }>;
+  soma?: { valence: string; intensity: number; marker: string };
+  depth?: number;
+  project?: string;
 }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   const { action } = args;
 
@@ -58,12 +60,16 @@ export async function handleGraphMemory(args: {
       return readNode(args.path);
     case "search":
       return searchGraph(args.query);
+    case "recall":
+      return recallGraph(args.query, args.depth);
     case "list_edges":
       return listEdges(args.path);
     case "read_dream":
       return readDream(args.path);
     case "write_note":
       return writeNote(args.note);
+    case "remember":
+      return rememberNode(args);
     case "status":
       return getStatus();
     case "history":
@@ -72,153 +78,348 @@ export async function handleGraphMemory(args: {
       return revertGraph(args.path);
     case "consolidate":
       return runConsolidation();
-    case "log_exchange":
-      return logExchange(args.messages);
     case "initialize":
       return initializeGraphAction(args.graphRoot);
     default:
       return {
-        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, list_edges, read_dream, write_note, status, history, revert, consolidate, log_exchange, initialize` }],
+        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, status, history, revert, consolidate, initialize` }],
         isError: true,
       };
   }
 }
 
+// --- remember action ---
+
+function rememberNode(args: {
+  path?: string;
+  gist?: string;
+  content?: string;
+  title?: string;
+  tags?: string[];
+  confidence?: number;
+  edges?: Array<{ target: string; type: string; weight?: number }>;
+  soma?: { valence: string; intensity: number; marker: string };
+  project?: string;
+}): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+  if (!args.path) {
+    return { content: [{ type: "text", text: "Error: path required for remember" }], isError: true };
+  }
+  if (!args.gist) {
+    return { content: [{ type: "text", text: "Error: gist required for remember" }], isError: true };
+  }
+
+  const filePath = safePath(CONFIG.paths.nodes, args.path, ".md");
+  if (!filePath) {
+    return { content: [{ type: "text", text: `Invalid path: ${args.path}` }], isError: true };
+  }
+
+  const now = new Date().toISOString().slice(0, 10);
+
+  if (fs.existsSync(filePath)) {
+    // Merge into existing node
+    try {
+      const raw = fs.readFileSync(filePath, "utf-8");
+      const parsed = matter(raw);
+
+      // Max confidence
+      if (args.confidence !== undefined && args.confidence > (parsed.data.confidence || 0)) {
+        parsed.data.confidence = args.confidence;
+      }
+
+      // Merge tags
+      if (args.tags) {
+        parsed.data.tags = [...new Set([...(parsed.data.tags || []), ...args.tags])];
+      }
+
+      // Merge edges (dedupe by target)
+      if (args.edges) {
+        const existingEdges = parsed.data.edges || [];
+        const existingTargets = new Set(existingEdges.map((e: any) => e.target));
+        for (const edge of args.edges) {
+          if (!existingTargets.has(edge.target)) {
+            existingEdges.push({
+              target: edge.target,
+              type: validateEdgeType(edge.type),
+              weight: edge.weight ?? 0.5,
+            });
+            existingTargets.add(edge.target);
+          }
+        }
+        parsed.data.edges = existingEdges;
+      }
+
+      // Update soma if provided
+      if (args.soma) {
+        parsed.data.soma = args.soma;
+      }
+
+      // Append content if different
+      if (args.content && !parsed.content.includes(args.content.slice(0, 100))) {
+        parsed.content = parsed.content.trimEnd() + `\n\n---\n\n${args.content}`;
+      }
+
+      // Update gist if provided (overwrite)
+      if (args.gist) {
+        parsed.data.gist = args.gist;
+      }
+
+      parsed.data.updated = now;
+      fs.writeFileSync(filePath, matter.stringify(parsed.content, parsed.data));
+
+      // Update index and MAP incrementally
+      updateIndexEntry(args.path, parsed.data);
+      fullRegenerateMAP();
+
+      return { content: [{ type: "text", text: `Updated existing node: ${args.path}` }] };
+    } catch (err: any) {
+      return { content: [{ type: "text", text: `Error merging node: ${err.message}` }], isError: true };
+    }
+  }
+
+  // Create new node
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+
+  const fm: Record<string, any> = {
+    id: args.path,
+    title: args.title || args.path.split("/").pop(),
+    gist: args.gist,
+    confidence: args.confidence ?? 0.5,
+    created: now,
+    updated: now,
+    decay_rate: 0.05,
+    tags: args.tags || [],
+    keywords: [],
+  };
+
+  // Only tag with project if explicitly provided (caller decides project-specificity)
+  if (args.project) {
+    fm.project = args.project;
+  }
+
+  if (args.edges && args.edges.length > 0) {
+    fm.edges = args.edges.map(e => ({
+      target: e.target,
+      type: validateEdgeType(e.type),
+      weight: e.weight ?? 0.5,
+    }));
+  }
+  if (args.soma) {
+    fm.soma = args.soma;
+  }
+
+  const title = fm.title;
+  const body = `# ${title}\n\n${args.content || ""}`;
+  fs.writeFileSync(filePath, matter.stringify(body, fm));
+
+  // Update index and MAP
+  updateIndexEntry(args.path, fm);
+  fullRegenerateMAP();
+
+  activityBus.log("graph:node_created", `Remember: ${args.path}`);
+  return { content: [{ type: "text", text: `Created node: ${args.path}` }] };
+}
+
+function updateIndexEntry(nodePath: string, fm: any) {
+  try {
+    const index = loadIndex();
+    const existing = index.findIndex((e: any) => e.path === nodePath);
+    const entry: Record<string, any> = {
+      path: nodePath,
+      gist: (fm.gist || "").slice(0, 200),
+      tags: fm.tags || [],
+      keywords: fm.keywords || [],
+      edges: (fm.edges || []).map((e: any) => e.target).filter(Boolean),
+      anti_edges: (fm.anti_edges || []).map((e: any) => e.target).filter(Boolean),
+      confidence: typeof fm.confidence === "number" ? fm.confidence : 0.5,
+      soma_intensity: fm.soma?.intensity || 0,
+      updated: fm.updated || fm.created || null,
+      last_accessed: fm.last_accessed || new Date().toISOString(),
+      access_count: fm.access_count || 0,
+      dream_refs: fm.dream_refs || [],
+    };
+    if (fm.project) {
+      entry.project = fm.project;
+    }
+    if (existing !== -1) {
+      index[existing] = entry;
+    } else {
+      index.push(entry);
+    }
+    fs.writeFileSync(CONFIG.paths.index, JSON.stringify(index, null, 2));
+    indexCache = null;
+  } catch { /* non-critical */ }
+}
+
+// --- Project boost for search scoring ---
+
+function projectBoost(entryProject: string | undefined, currentProject: string | undefined): number {
+  if (!entryProject) return 1.0; // Global node — always relevant
+  if (!currentProject || currentProject === "global") return 1.0; // No project context
+  if (entryProject === currentProject) return 1.3; // Project match bonus
+  return 0.7; // Other project — slightly demoted
+}
+
+// --- recall action ---
+
+function recallGraph(query?: string, depth?: number): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+  if (!query) {
+    return { content: [{ type: "text", text: "Error: query required for recall" }], isError: true };
+  }
+
+  const index = loadIndex();
+  if (index.length === 0) {
+    return { content: [{ type: "text", text: "Graph index not yet built. No nodes to search." }] };
+  }
+
+  const hopDepth = depth ?? 1;
+  const queryTokens = query.toLowerCase().split(/\s+/);
+  const currentProject = readActiveProject()?.name;
+
+  // Score and rank
+  const results = index
+    .map((entry: any) => {
+      const gistTokens = (entry.gist || "").toLowerCase().split(/\s+/);
+      const tagTokens = (entry.tags || []).map((t: string) => t.toLowerCase());
+      const keywordTokens = (entry.keywords || []).map((k: string) => k.toLowerCase());
+
+      const gistScore = overlap(queryTokens, gistTokens) * 3;
+      const tagScore = overlap(queryTokens, tagTokens) * 2;
+      const keywordScore = overlap(queryTokens, keywordTokens) * 1;
+
+      const baseRelevance = (gistScore + tagScore + keywordScore) * (entry.confidence || 0.5);
+      const recency = recencyBoost(entry.last_accessed);
+      const soma = somaBoost(entry.soma_intensity || 0);
+      const projBoost = projectBoost(entry.project, currentProject);
+      const relevance = baseRelevance * recency * soma * projBoost;
+
+      return { ...entry, relevance };
+    })
+    .filter((e: any) => e.relevance > 0.1)
+    .sort((a: any, b: any) => b.relevance - a.relevance)
+    .slice(0, 5);
+
+  if (results.length === 0) {
+    return { content: [{ type: "text", text: `No results for: "${query}"` }] };
+  }
+
+  // Auto-load edge targets (1 hop)
+  const edgeTargets = new Set<string>();
+  const resultPaths = new Set(results.map((r: any) => r.path));
+
+  if (hopDepth >= 1) {
+    for (const result of results) {
+      for (const edgeTarget of result.edges || []) {
+        if (!resultPaths.has(edgeTarget)) {
+          edgeTargets.add(edgeTarget);
+        }
+      }
+    }
+  }
+
+  const connectedNodes = [...edgeTargets]
+    .map(target => index.find((e: any) => e.path === target))
+    .filter(Boolean)
+    .slice(0, 5);
+
+  // Format output
+  const sections: string[] = [];
+
+  sections.push("## Direct Matches\n");
+  for (const r of results) {
+    const dreamCount = (r.dream_refs || []).length;
+    const dreamStr = dreamCount > 0 ? ` [${dreamCount} dreams]` : "";
+    sections.push(`- **${r.path}** (relevance: ${r.relevance.toFixed(2)}, confidence: ${r.confidence})${dreamStr}\n  ${r.gist}`);
+  }
+
+  if (connectedNodes.length > 0) {
+    sections.push("\n## Connected Nodes (1 hop)\n");
+    for (const n of connectedNodes) {
+      sections.push(`- **${n.path}** (confidence: ${n.confidence})\n  ${n.gist}`);
+    }
+  }
+
+  return { content: [{ type: "text", text: sections.join("\n") }] };
+}
+
 // --- consolidate action ---
 
 async function runConsolidation(): Promise<{ content: Array<{ type: "text"; text: string }> }> {
-  if (!CONFIG.pipeline.dedicatedMode) {
-    // Piggyback mode: return structured instructions for the host agent
-    return buildPiggybackInstructions();
+  // Mechanical-only consolidation: process deltas, rebuild MAP, run decay
+  const deltasDir = CONFIG.paths.deltas;
+  if (!fs.existsSync(deltasDir)) {
+    return { content: [{ type: "text", text: JSON.stringify({ success: true, message: "No deltas to process." }, null, 2) }] };
   }
 
-  // Dedicated mode: run the full pipeline directly
-  const watcher = getBufferWatcher();
-  const sessionId = watcher.getSessionId() || `session_${Date.now()}`;
+  const deltaFiles = fs.readdirSync(deltasDir).filter(f => f.endsWith(".json")).sort();
+  if (deltaFiles.length === 0) {
+    return { content: [{ type: "text", text: JSON.stringify({ success: true, message: "No deltas to process." }, null, 2) }] };
+  }
 
-  activityBus.log("session:end", `Consolidation triggered (dedicated mode) for ${sessionId}`);
+  let totalApplied = 0;
+  const allErrors: string[] = [];
+  const processed: string[] = [];
 
+  for (const deltaFile of deltaFiles) {
+    const sessionId = deltaFile.replace(".json", "");
+    try {
+      const result = await applyDeltas(sessionId);
+      totalApplied += result.appliedCount;
+      allErrors.push(...result.errors);
+      processed.push(deltaFile);
+    } catch (err: any) {
+      allErrors.push(`Failed processing ${sessionId}: ${err.message}`);
+    }
+  }
+
+  // Run decay
   try {
-    // 1. Flush any buffered messages through scribe
-    await watcher.flush();
-
-    // 2. Run librarian
-    await runLibrarian(sessionId);
-
-    // 3. Run dreamer
-    await runDreamer(sessionId);
-
-    // 4. Update manifest
-    updateManifest();
-
-    // 5. Git auto-commit
-    await autoCommit("consolidation (plugin)");
-
-    // 6. Reset watcher for next session
-    watcher.startSession();
-
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        success: true,
-        sessionId,
-        message: "Consolidation complete. Graph updated, MAP regenerated, dreams processed.",
-      }, null, 2) }],
-    };
+    runDecay();
   } catch (err: any) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        success: false,
-        error: err.message,
-        message: "Consolidation failed. Deltas preserved for next attempt.",
-      }, null, 2) }],
-    };
-  }
-}
-
-/**
- * Piggyback mode: instead of making direct API calls, return structured prompts
- * that the host agent can execute using its own credentials.
- */
-function buildPiggybackInstructions(): { content: Array<{ type: "text"; text: string }> } {
-  const watcher = getBufferWatcher();
-  const sessionId = watcher.getSessionId() || `session_${Date.now()}`;
-
-  // Check if there are deltas to process
-  const deltaFile = path.join(CONFIG.paths.deltas, `${sessionId}.json`);
-  if (!fs.existsSync(deltaFile)) {
-    return {
-      content: [{ type: "text", text: JSON.stringify({
-        mode: "piggyback",
-        status: "no_deltas",
-        message: "No conversation data buffered for this session. Nothing to consolidate.",
-      }, null, 2) }],
-    };
+    allErrors.push(`Decay failed: ${err.message}`);
   }
 
-  const librarianInput = buildLibrarianInput(sessionId);
-  const dreamerInput = buildDreamerInput(sessionId);
+  // Rebuild MAP and index
+  try {
+    fullRegenerateMAP();
+    rebuildIndex();
+  } catch (err: any) {
+    allErrors.push(`Rebuild failed: ${err.message}`);
+  }
 
-  // Load prompt files
-  const librarianPrompt = fs.readFileSync(path.join(CONFIG.paths.prompts, "librarian.md"), "utf-8");
-  const dreamerPrompt = fs.readFileSync(path.join(CONFIG.paths.prompts, "dreamer.md"), "utf-8");
+  // Update manifest and commit
+  try {
+    updateManifest();
+    await autoCommit("consolidation");
+  } catch (err: any) {
+    allErrors.push(`Post-consolidation failed: ${err.message}`);
+  }
+
+  // Clean up only successfully processed deltas
+  for (const f of processed) {
+    try { fs.unlinkSync(path.join(deltasDir, f)); } catch { /* skip */ }
+  }
+
+  clearConsolidationPending();
+
+  // Count current state
+  const nodeCount = fs.existsSync(CONFIG.paths.nodes) ? countFilesUtil(CONFIG.paths.nodes, ".md") : 0;
+  const pendingDir = path.join(CONFIG.paths.dreams, "pending");
+  const dreamCount = fs.existsSync(pendingDir) ? fs.readdirSync(pendingDir).filter(f => f.endsWith(".json")).length : 0;
 
   return {
     content: [{ type: "text", text: JSON.stringify({
-      mode: "piggyback",
-      status: "ready",
-      message: "Consolidation requires processing. Follow the steps below using your own capabilities.",
-      sessionId,
-      steps: [
-        {
-          step: 1,
-          name: "librarian",
-          description: "Reconcile session deltas into graph updates",
-          systemPrompt: librarianPrompt,
-          userInput: librarianInput,
-          instructions: "Process this with the librarian system prompt. The output is JSON. Then call graph_memory(action='apply_consolidation', path='librarian', note=<JSON output>).",
-        },
-        ...(dreamerInput ? [{
-          step: 2,
-          name: "dreamer",
-          description: "Creative recombination — find surprising connections",
-          systemPrompt: dreamerPrompt,
-          userInput: dreamerInput,
-          instructions: "Process this with the dreamer system prompt at high temperature. The output is JSON. Then call graph_memory(action='apply_consolidation', path='dreamer', note=<JSON output>).",
-        }] : []),
-      ],
+      success: true,
+      message: `Consolidation complete. ${totalApplied} deltas applied mechanically.`,
+      deltasApplied: totalApplied,
+      errors: allErrors,
+      nodeCount,
+      dreamCount,
     }, null, 2) }],
   };
 }
 
-// --- log_exchange action ---
-
-function logExchange(
-  messages?: Array<{ role: string; content: string }>
-): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
-  if (!messages || messages.length === 0) {
-    return {
-      content: [{ type: "text", text: "Error: messages array required for log_exchange" }],
-      isError: true,
-    };
-  }
-
-  const watcher = getBufferWatcher();
-
-  for (const msg of messages) {
-    if (msg.role !== "user" && msg.role !== "assistant") continue;
-    watcher.appendMessage({
-      role: msg.role as "user" | "assistant",
-      content: msg.content,
-      timestamp: new Date().toISOString(),
-    });
-  }
-
-  return {
-    content: [{ type: "text", text: `Logged ${messages.length} messages. Buffer: ${watcher.getStatus().bufferCount}/${CONFIG.session.scribeInterval}` }],
-  };
-}
-
-// --- Existing actions (unchanged logic) ---
+// --- Existing actions ---
 
 function readNode(nodePath?: string) {
   if (!nodePath) {
@@ -239,8 +440,31 @@ function readNode(nodePath?: string) {
     return { content: [{ type: "text" as const, text: `Node not found: ${nodePath}` }], isError: true };
   }
 
-  const content = fs.readFileSync(fullPath, "utf-8");
+  let content = fs.readFileSync(fullPath, "utf-8");
   updateLastAccessed(nodePath);
+
+  // Surface dream connections if present
+  try {
+    const parsed = matter(content);
+    const dreamRefs: string[] = parsed.data.dream_refs || [];
+    if (dreamRefs.length > 0) {
+      const dreamSections: string[] = [];
+      const pendingDir = path.join(CONFIG.paths.dreams, "pending");
+      for (const dreamFile of dreamRefs) {
+        const dreamPath = path.join(pendingDir, dreamFile);
+        if (fs.existsSync(dreamPath)) {
+          try {
+            const dreamData = JSON.parse(fs.readFileSync(dreamPath, "utf-8"));
+            dreamSections.push(`- ${dreamData.fragment?.slice(0, 150) || "unknown"} (confidence: ${dreamData.confidence || "?"})`);
+          } catch { /* skip */ }
+        }
+      }
+      if (dreamSections.length > 0) {
+        content += `\n\n---\n\n## Related Dreams\n\n${dreamSections.join("\n")}`;
+      }
+    }
+  } catch { /* skip — return raw content */ }
+
   return { content: [{ type: "text" as const, text: content }] };
 }
 
@@ -282,6 +506,7 @@ function searchGraph(query?: string) {
 
   try {
     const queryTokens = query.toLowerCase().split(/\s+/);
+    const currentProject = readActiveProject()?.name;
 
     const results = index
       .map((entry: any) => {
@@ -296,7 +521,8 @@ function searchGraph(query?: string) {
         const baseRelevance = (gistScore + tagScore + keywordScore) * (entry.confidence || 0.5);
         const recency = recencyBoost(entry.last_accessed);
         const soma = somaBoost(entry.soma_intensity || 0);
-        const relevance = baseRelevance * recency * soma;
+        const projBoost = projectBoost(entry.project, currentProject);
+        const relevance = baseRelevance * recency * soma * projBoost;
 
         const reasons: string[] = [];
         if (gistScore > 0) reasons.push(`gist match (${Math.round(gistScore / 3 * 100)}%)`);
@@ -316,7 +542,11 @@ function searchGraph(query?: string) {
     }
 
     const formatted = results
-      .map((r: any) => `- ${r.path} (relevance: ${r.relevance.toFixed(2)})\n  ${r.gist}\n  [${r.match_reason}]`)
+      .map((r: any) => {
+        const dreamCount = (r.dream_refs || []).length;
+        const dreamStr = dreamCount > 0 ? ` [${dreamCount} dreams]` : "";
+        return `- ${r.path} (relevance: ${r.relevance.toFixed(2)}${dreamStr})\n  ${r.gist}\n  [${r.match_reason}]`;
+      })
       .join("\n\n");
 
     return { content: [{ type: "text" as const, text: formatted }] };
@@ -448,9 +678,10 @@ function initializeGraphAction(graphRoot?: string) {
     ? path.resolve(graphRoot.replace(/^~/, home))
     : path.join(home, ".graph-memory");
 
-  // Reject dangerous paths
-  const dangerous = ["/", "/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/sys", "/proc"];
-  if (dangerous.includes(resolvedRoot)) {
+  // Reject dangerous paths (prefix-based check)
+  const normalized = resolvedRoot.replace(/\/+$/, "");
+  const dangerous = ["/etc", "/usr", "/var", "/bin", "/sbin", "/lib", "/sys", "/proc"];
+  if (normalized === "/" || dangerous.some(d => normalized === d || normalized.startsWith(d + "/"))) {
     return { content: [{ type: "text" as const, text: `Error: refusing to initialize graph at system path: ${resolvedRoot}` }], isError: true };
   }
 
@@ -500,20 +731,26 @@ function getStatus() {
     warnings.push(`${lowConfNodes.length} node(s) below 0.3 confidence`);
   }
 
-  const watcher = bufferWatcher?.getStatus();
+  // Check for pending operations
+  const scribePending = fs.existsSync(CONFIG.paths.scribePending);
+  const consolidationPending = fs.existsSync(CONFIG.paths.consolidationPending);
 
-  const status = {
+  // Active project
+  const activeProject = readActiveProject();
+
+  const status: Record<string, any> = {
     initialized,
     firstRun: !initialized,
     graphRoot: CONFIG.paths.graphRoot,
-    pipelineMode: CONFIG.pipeline.dedicatedMode ? "dedicated" : "piggyback",
+    activeProject: activeProject?.name || "global",
     mapLoaded: mapExists,
     priorsLoaded: priorsExists,
     indexBuilt: indexExists,
     nodeCount,
     pendingDreams: dreamCount,
+    scribePending,
+    consolidationPending,
     warnings,
-    ...(watcher ? { session: watcher } : {}),
   };
 
   return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
@@ -532,20 +769,41 @@ function overlap(a: string[], b: string[]): number {
 // Zod schema for the tool (exported for MCP server registration)
 export const graphMemorySchema = {
   action: z.enum([
-    "read_node", "search", "list_edges", "read_dream", "write_note",
-    "status", "history", "revert", "consolidate", "log_exchange", "initialize"
+    "read_node", "search", "recall", "list_edges", "read_dream", "write_note",
+    "remember", "status", "history", "revert", "consolidate", "initialize"
   ]).describe("The action to perform on the knowledge graph"),
   path: z.string().optional()
-    .describe("Node path for read_node/list_edges, dream path for read_dream, commit hash for revert"),
+    .describe("Node path for read_node/list_edges/remember, dream path for read_dream, commit hash for revert"),
   query: z.string().optional()
-    .describe("Search query for the search action"),
+    .describe("Search query for search/recall actions"),
   note: z.string().optional()
     .describe("Note content for write_note action"),
+  gist: z.string().optional()
+    .describe("One-sentence summary for remember action"),
+  content: z.string().optional()
+    .describe("Full content for remember action"),
+  title: z.string().optional()
+    .describe("Human-readable title for remember action"),
+  tags: z.array(z.string()).optional()
+    .describe("Tags for remember action"),
+  confidence: z.number().min(0).max(1).optional()
+    .describe("Confidence (0-1) for remember action"),
+  edges: z.array(z.object({
+    target: z.string(),
+    type: z.string(),
+    weight: z.number().optional(),
+  })).optional()
+    .describe("Edge connections for remember action"),
+  soma: z.object({
+    valence: z.string(),
+    intensity: z.number(),
+    marker: z.string(),
+  }).optional()
+    .describe("Somatic marker for remember action"),
+  depth: z.number().optional()
+    .describe("Edge traversal depth for recall action (default 1)"),
   graphRoot: z.string().optional()
     .describe("Storage path for initialize action (defaults to ~/.graph-memory/)"),
-  messages: z.array(z.object({
-    role: z.string(),
-    content: z.string(),
-  })).optional()
-    .describe("Message array for log_exchange action: [{role, content}, ...]"),
+  project: z.string().optional()
+    .describe("Project scope for remember action (e.g. 'owner/repo'). Only set for project-specific knowledge, omit for global."),
 };

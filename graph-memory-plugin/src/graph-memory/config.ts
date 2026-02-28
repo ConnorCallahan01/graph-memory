@@ -19,11 +19,6 @@ interface GraphMemoryGlobalConfig {
 }
 
 interface GraphMemoryLocalConfig {
-  models?: {
-    scribe?: string;
-    librarian?: string;
-    dreamer?: string;
-  };
   git?: {
     enabled?: boolean;
     autoPush?: boolean;
@@ -76,13 +71,6 @@ function loadLocalConfig(graphRoot: string): GraphMemoryLocalConfig {
 }
 
 /**
- * Detect whether a dedicated API key is available for pipeline mode.
- */
-function hasDedicatedApiKey(): boolean {
-  return !!process.env.ANTHROPIC_API_KEY;
-}
-
-/**
  * Build the full config object. Called once at startup.
  */
 function createConfig() {
@@ -90,24 +78,6 @@ function createConfig() {
   const local = loadLocalConfig(graphRoot);
 
   return {
-    models: {
-      scribe: local.models?.scribe || "claude-haiku-4-5-20251001",
-      librarian: local.models?.librarian || "claude-sonnet-4-5-20250929",
-      dreamer: local.models?.dreamer || "claude-sonnet-4-5-20250929",
-    },
-
-    temperature: {
-      scribe: 0.3,
-      librarian: 0.2,
-      dreamer: 1.0,
-    },
-
-    maxTokens: {
-      scribe: 4096,
-      librarian: 16384,
-      dreamer: 4096,
-    },
-
     session: {
       scribeInterval: 5,
       idleTimeoutMs: 120_000,
@@ -126,6 +96,9 @@ function createConfig() {
       dreamPendingMaxSessions: 5,
       dreamMinConfidence: 0.2,
       dreamPromoteConfidence: 0.5,
+      maxMapDepth: 2,
+      maxPendingDreams: 20,
+      maxDreamsPerSession: 5,
     },
 
     paths: {
@@ -140,6 +113,10 @@ function createConfig() {
       priors: path.join(graphRoot, "PRIORS.md"),
       index: path.join(graphRoot, ".index.json"),
       manifest: path.join(graphRoot, "manifest.yml"),
+      dirtyState: path.join(graphRoot, ".dirty-session"),
+      consolidationPending: path.join(graphRoot, ".consolidation-pending"),
+      scribePending: path.join(graphRoot, ".scribe-pending"),
+      activeProjects: path.join(graphRoot, ".active-projects"),
       // Prompts are bundled relative to dist/ (or src/ in dev)
       prompts: path.resolve(__dirname, "prompts"),
     },
@@ -150,12 +127,6 @@ function createConfig() {
       branch: "main",
       autoPush: local.git?.autoPush || false,
       commitPrefix: "memory:",
-    },
-
-    pipeline: {
-      /** If true, MCP server makes direct API calls for scribe/librarian/dreamer.
-       *  If false, consolidation returns structured instructions for the host agent. */
-      dedicatedMode: hasDedicatedApiKey(),
     },
 
     /** Path to the global config pointer file */
