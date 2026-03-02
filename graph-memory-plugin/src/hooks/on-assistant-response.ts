@@ -11,12 +11,8 @@
  */
 import fs from "fs";
 import path from "path";
-import { fileURLToPath } from "url";
 import { CONFIG, isGraphInitialized } from "../graph-memory/config.js";
 import { detectProject } from "../graph-memory/project.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const AGENTS_DIR = path.resolve(__dirname, "../../agents");
 
 interface StopHookInput {
   session_id: string;
@@ -73,8 +69,10 @@ async function main() {
   const bufferLines = bufferContent.split("\n").filter(Boolean);
   const messageCount = bufferLines.length;
 
-  // Rotate and create scribe-pending marker every N messages
-  if (messageCount >= CONFIG.session.scribeInterval) {
+  // Rotate and create scribe-pending marker every N messages.
+  // Skip rotation if a scribe is already pending — let the buffer keep accumulating
+  // until the current scribe finishes and clears the marker.
+  if (messageCount >= CONFIG.session.scribeInterval && !fs.existsSync(CONFIG.paths.scribePending)) {
     // Rotate: save snapshot, clear buffer
     const snapshotName = `snapshot_${Date.now()}.jsonl`;
     const snapshotPath = path.join(bufferDir, snapshotName);
@@ -87,7 +85,8 @@ async function main() {
     const cwd = input.cwd || process.cwd();
     const project = detectProject(cwd);
 
-    // Write .scribe-pending marker for subagent dispatch
+    // Write .scribe-pending marker — dispatched by UserPromptSubmit hook (not here;
+    // Stop hook stdout is not visible to the agent).
     const marker: Record<string, any> = {
       snapshotPath,
       sessionId,
@@ -98,13 +97,7 @@ async function main() {
       marker.project = project.name;
     }
     fs.writeFileSync(CONFIG.paths.scribePending, JSON.stringify(marker));
-    console.error(`[graph-memory] Buffer rotated (${messageCount} messages). Dispatching scribe.`);
-
-    // Emit dispatch instruction to stdout — Claude sees this and launches the scribe mid-session
-    const scribePromptPath = path.join(AGENTS_DIR, "memory-scribe.md");
-    const graphRoot = CONFIG.paths.graphRoot;
-    const projectCtx = marker.project ? ` Current project: ${marker.project} (use this for classifying deltas as global vs project-scoped).` : "";
-    console.log(`<graph-memory-action>SCRIBE PENDING: Use the Task tool with subagent_type="general-purpose", model="sonnet", and run_in_background=true. Prompt: "Read the scribe instructions at ${scribePromptPath}, then follow them. Snapshot file: ${snapshotPath}, session ID: ${sessionId}, graph root: ${graphRoot}.${projectCtx} Read the snapshot, read MAP.md, then read only the 2-5 existing nodes most relevant to the conversation for context. Extract deltas, write to .deltas/ directory, then remove .scribe-pending marker."</graph-memory-action>`);
+    console.error(`[graph-memory] Buffer rotated (${messageCount} messages). Scribe marker written — dispatch on next user message.`);
   }
 }
 

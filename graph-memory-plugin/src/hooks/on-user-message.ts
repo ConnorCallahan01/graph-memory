@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /**
  * UserPromptSubmit hook — captures each user message to the buffer.
+ * Also dispatches pending scribes mid-session (Stop hook stdout is invisible
+ * to the agent, so we dispatch here where stdout reaches the agent context).
  *
  * Receives JSON on stdin with:
  *   - prompt: the user's message text
@@ -9,9 +11,14 @@
  * Appends directly to conversation.jsonl.
  */
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { CONFIG, isGraphInitialized } from "../graph-memory/config.js";
 import { markDirty } from "../graph-memory/dirty-state.js";
 import { detectProject } from "../graph-memory/project.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const AGENTS_DIR = path.resolve(__dirname, "../../agents");
 
 async function main() {
   if (!isGraphInitialized()) return;
@@ -61,6 +68,30 @@ async function main() {
   // Keep dirty state fresh
   const sessionId = input.session_id || `session_${Date.now()}`;
   markDirty(sessionId);
+
+  // Dispatch pending scribe mid-session.
+  // The Stop hook writes .scribe-pending but its stdout is invisible to the agent.
+  // UserPromptSubmit stdout IS visible, so we dispatch here.
+  if (fs.existsSync(CONFIG.paths.scribePending)) {
+    try {
+      const stat = fs.statSync(CONFIG.paths.scribePending);
+      const ageMs = Date.now() - stat.mtimeMs;
+      if (ageMs > 3600_000) {
+        // Stale marker (>1 hour) — clean up
+        console.error("[graph-memory] Removing stale scribe-pending marker (>1 hour old).");
+        fs.unlinkSync(CONFIG.paths.scribePending);
+      } else {
+        const marker = JSON.parse(fs.readFileSync(CONFIG.paths.scribePending, "utf-8"));
+        const scribePromptPath = path.join(AGENTS_DIR, "memory-scribe.md");
+        const graphRoot = CONFIG.paths.graphRoot;
+        const projectCtx = marker.project ? ` Current project: ${marker.project} (use this for classifying deltas as global vs project-scoped).` : "";
+        console.log(`<graph-memory-action>SCRIBE PENDING: Use the Task tool with subagent_type="general-purpose", model="sonnet", and run_in_background=true. Prompt: "Read the scribe instructions at ${scribePromptPath}, then follow them. Snapshot file: ${marker.snapshotPath}, session ID: ${marker.sessionId}, graph root: ${graphRoot}.${projectCtx} Read the snapshot, read MAP.md, then read only the 2-5 existing nodes most relevant to the conversation for context. Extract deltas, write to .deltas/ directory, then remove .scribe-pending marker."</graph-memory-action>`);
+      }
+    } catch {
+      // Unreadable marker — remove it
+      try { fs.unlinkSync(CONFIG.paths.scribePending); } catch { /* ignore */ }
+    }
+  }
 }
 
 main().catch((err) => {
