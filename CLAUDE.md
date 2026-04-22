@@ -14,8 +14,6 @@ Active surfaces:
 Legacy/reference material:
 
 - root **`src/`**, **`tests/`**, **`public/`**, and root **`package.json`** — earlier prototype path, not the current install surface
-- **`memory_implementation`** — original interactive specification artifact
-- **`GRAPH_MEMORY_*.md`**, **`NOTES.md`**, **`PHASE_*.md`**, **`BLOG.md`** — design and writing artifacts
 
 ## Repository Structure
 

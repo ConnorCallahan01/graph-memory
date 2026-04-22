@@ -36,10 +36,6 @@ These paths are kept for context and design history. They are not required for p
 
 Earlier prototype server/application path. Useful if you want to study the project’s earlier architecture, but not part of the current plugin install flow.
 
-### `memory_implementation`
-
-Original interactive specification artifact.
-
 ### `graph-memory/`
 
 Reference directory kept from earlier iterations. Not part of the current install path.
@@ -47,10 +43,6 @@ Reference directory kept from earlier iterations. Not part of the current instal
 ### `test-app/`
 
 Prototype sandbox directory, not part of the supported public workflow.
-
-### `GRAPH_MEMORY_*.md`, `NOTES.md`, `PHASE_*.md`, `BLOG.md`
-
-Design notes, architecture drafts, specs, implementation audits, and writing artifacts. Useful for project history, not required reading for setup.
 
 ## What To Edit For Public Documentation
 
