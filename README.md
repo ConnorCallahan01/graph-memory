@@ -2,11 +2,13 @@
 
 <div align="center">
 
-**A knowledge graph memory system for Claude Code and long-lived AI workflows**
+## Give your agent a past
 
-*Not a vector database. Not a pile of chat logs. Not a giant prompt.*
+**A filesystem-first memory graph for Claude Code and long-lived AI workflows**
 
-*An inspectable memory graph that lives on disk, learns over time, and gives your agent a past.*
+*Not a vector DB. Not a prompt scrapbook. Not a black box.*
+
+*A visible memory system that lives on disk, improves with use, and can be searched, edited, diffed, and rolled back.*
 
 </div>
 
@@ -16,152 +18,190 @@
 
 Most agent sessions are brilliant and disposable.
 
-The model figures things out, adapts to your preferences, learns the shape of a repo, notices recurring mistakes, and then the session ends. Tomorrow, you start over.
+The model learns your style, adapts to a repo, notices recurring mistakes, and starts to become useful in a deeper way. Then the session ends, and tomorrow it begins again from zero.
 
-`graph-memory` is an attempt to fix that without turning memory into black-box retrieval infrastructure.
+`graph-memory` is an attempt to fix that without hiding memory behind infrastructure you cannot inspect.
 
-It stores memory as markdown files with YAML frontmatter, keeps a compressed map of what matters, builds behavioral priors from repetition, and gives the agent a real tool surface for recall, search, reading, writing, and rollback.
+It stores memory as markdown nodes, compresses the graph into prompt-ready artifacts like `MAP.md` and `PRIORS.md`, gives Claude Code a real memory tool surface, and optionally runs a background pipeline that turns recent interaction history into structured graph updates.
 
-The result is an agent that can:
+The goal is simple:
 
-- remember who you are and how you like to work
-- keep durable project context across sessions
-- preserve working context instead of re-deriving it every morning
-- improve its behavior from repeated corrections
-- show its memory as files you can inspect, edit, diff, and revert
+- let the agent remember what matters
+- let that memory stay inspectable
+- let behavior improve from repetition
+- let stale memory fade instead of accumulating forever
 
 ---
 
-## The Pitch In One Screen
+## Choose Your Path
+
+If you cloned this repo, pick the path that matches what you want:
+
+| If you want... | Start here |
+|---|---|
+| basic persistent memory in Claude Code | [Quick Start](#quick-start) |
+| the full background pipeline | [Runtime Modes](#runtime-modes) |
+| concrete command and tool examples | [Five-Minute First Success](#five-minute-first-success) |
+| the current plugin surface | [`graph-memory-plugin/`](./graph-memory-plugin/) |
+| debugging / observability | [`memory-dashboard/`](./memory-dashboard/) |
+| the full setup walkthrough | [docs/setup-from-clone.md](./docs/setup-from-clone.md) |
+
+---
+
+## The System In Three Diagrams
+
+### 1. Install Flow
 
 ```text
-You talk to Claude Code
-        |
-        v
-Hooks capture session activity, tool traces, and assistant output
-        |
-        v
-graph-memory writes buffered material into a graph root on disk
-        |
-        +--> MAP.md       = compressed "what do I know?"
-        +--> PRIORS.md    = "how should I behave?"
-        +--> WORKING.md   = "what is active right now?"
-        +--> nodes/*.md   = durable memory
-        +--> archive/*    = memory that faded, not memory that vanished
-        |
-        v
-Optional background pipeline:
-scribe -> auditor -> librarian -> dreamer
-        |
-        v
-Your next session starts with a memory instead of a blank stare
+clone repo
+   |
+   v
+cd graph-memory/graph-memory-plugin
+   |
+   v
+./bin/install.sh
+   |
+   +--> builds plugin
+   +--> links into ~/.claude/plugins/graph-memory
+   +--> registers MCP server in ~/.claude.json
+   +--> installs slash commands in ~/.claude/commands/
+   +--> registers Claude Code hooks in ~/.claude/settings.json
+   |
+   v
+open Claude Code
+   |
+   v
+/memory-onboard
+```
+
+### 2. Runtime Architecture
+
+```text
+          host machine
+  -----------------------------------
+  Claude Code
+     |
+     +--> hooks capture:
+     |    - session start
+     |    - user messages
+     |    - assistant output
+     |    - tool traces
+     |    - session end
+     |
+     +--> graph_memory MCP tool
+     |
+     v
+  graph root on disk
+     |
+     +--> nodes/
+     +--> archive/
+     +--> MAP.md
+     +--> PRIORS.md
+     +--> WORKING.md
+     +--> DREAMS.md
+     +--> briefs/
+     +--> .buffer/ .deltas/ .jobs/ .sessions/
+     |
+     v
+  optional Docker daemon
+     |
+     v
+  scribe -> auditor -> librarian -> dreamer
+```
+
+### 3. Memory Lifecycle
+
+```text
+conversation happens
+      |
+      v
+hooks + buffers capture what mattered
+      |
+      v
+scribe extracts deltas
+      |
+      v
+librarian updates graph structure and context artifacts
+      |
+      +--> strong memory stays active
+      +--> weak/stale memory decays
+      +--> archived memory can be resurfaced
+      |
+      v
+next session starts with MAP + PRIORS + WORKING
 ```
 
 ---
 
-## What It Can Do
+## What Makes This Different
 
-### Durable Graph Memory
+### Filesystem First
 
-- stores memory as markdown nodes with confidence, tags, edges, anti-edges, soma markers, and timestamps
-- supports active nodes plus archive/resurface flows instead of silent deletion
-- keeps memory diffable in git
+The filesystem is the database.
 
-### Recall, Search, And Direct Memory Writes
+Memory is made of files you can:
 
-The MCP tool `graph_memory` supports:
+- open
+- grep
+- diff
+- review in git
+- back up normally
+- edit by hand if needed
 
-- `initialize`
-- `configure_runtime`
-- `status`
-- `remember`
-- `write_note`
-- `search`
-- `recall`
-- `read_node`
-- `list_edges`
-- `read_dream`
-- `consolidate`
-- `history`
-- `revert`
-- `resurface`
+### Memory, Not Retrieval Theater
 
-This means the agent can actively query and shape memory instead of treating memory as passive context stuffing.
+This project is opinionated.
 
-### Session-Aware Context Refresh
+If what you want is “dump everything into embeddings and pull back vaguely related chunks,” this is not that.
 
-The plugin installs Claude Code hooks for:
+`graph-memory` favors:
 
-- session start
-- user message capture
-- assistant response capture
-- pre-tool tracing
-- post-tool tracing
-- session end consolidation
+- explicit graph structure
+- compressed, inspectable summaries
+- durable behavioral priors
+- memory that can decay, archive, and return
 
-That gives the system a living sense of what happened, not just a snapshot of final answers.
+over:
 
-### Background Pipeline
+- hidden ranking layers
+- opaque retrieval behavior
+- memory that only grows
 
-In fuller runtime mode, the system can move work through:
+### Behavior Matters, Not Just Facts
 
-```text
-scribe -> auditor -> librarian -> dreamer
-```
+The system is not only trying to remember:
 
-- **scribe** extracts structured deltas from recent interaction history
-- **auditor** does mechanical triage and prepares judgment calls
-- **librarian** updates graph structure, priors, and context files
-- **dreamer** makes speculative cross-node connections
+- names
+- repos
+- preferences
+- decisions
 
-### Morning Briefing And Kickoff
+It is also trying to remember:
 
-The current codebase includes a morning-analysis path that can:
+- how you like tradeoffs framed
+- what kinds of agent behavior you keep correcting
+- where workflows keep stalling
+- what rules belong in `CLAUDE.md`
 
-- read recent brief history
-- synthesize 7-day patterns
-- identify open loops and agent friction
-- propose durable `CLAUDE.md` upgrades
-- generate a repo-specific morning kickoff
-
-### External Inputs
-
-The newer plugin surface also includes optional host-side external-input plumbing for:
-
-- Gmail
-- Calendar
-- Slack-ready config scaffolding
-
-Those inputs are designed to feed briefing workflows without turning your memory graph into an inbox dump.
-
-### Optional Dashboard
-
-The local dashboard can inspect:
-
-- graph topology
-- node detail
-- deltas
-- activity feed
-- logs
-- pipeline state
-- startup context
-- session traces
-- morning briefs
-
-If you want the memory system to feel observable instead of magical, this matters.
+That is the interesting part.
 
 ---
 
-## What A Fresh Clone Gets You
+## Capability Map
 
-When you clone this repo, you are primarily getting:
-
-- [`graph-memory-plugin/`](./graph-memory-plugin/): the installable Claude Code plugin
-- [`memory-dashboard/`](./memory-dashboard/): an optional local inspection UI
-- [`examples/`](./examples/): command, tool, skill, and SDK examples
-- [`docs/`](./docs/): setup and repo notes
-
-The root `src/`, `tests/`, `public/`, `graph-memory/`, and `test-app/` paths are older or auxiliary development surfaces, not the main install path.
+| Capability | What it means | State |
+|---|---|---|
+| durable graph nodes | markdown memory nodes with confidence, tags, edges, soma markers, timestamps | stable core |
+| recall + search | keyword search, multi-hop recall, direct node reads | stable core |
+| direct memory writes | `remember`, `write_note`, `resurface`, git history, revert | stable core |
+| startup context loading | `MAP.md`, `PRIORS.md`, working context loaded through hooks | stable core |
+| background pipeline | `scribe -> auditor -> librarian -> dreamer` | advanced / optional |
+| Docker runtime helpers | bootstrap, health checks, status, auth import, runtime env | advanced / optional |
+| morning kickoff | repo-specific start-of-day briefing from memory | available, still evolving |
+| daily brief analysis | 7-day trends, open loops, agent friction, suggested `CLAUDE.md` upgrades | present in current codebase, still evolving |
+| session/tool tracing | assistant traces + tool traces for richer operator insight | present in current codebase, still evolving |
+| external inputs | Gmail / Calendar / Slack-ready config for briefing flows | present in current codebase, still evolving |
+| dashboard | inspect nodes, graph, deltas, traces, logs, pipeline state, briefs | local/dev-facing, valuable for operators |
 
 ---
 
@@ -179,39 +219,75 @@ Then open Claude Code and run:
 /memory-onboard
 ```
 
-That flow will guide you through:
+That flow will walk through:
 
-1. choosing where the graph root should live
+1. choosing a graph root
 2. selecting runtime mode
-3. bootstrapping Docker if you want background processing
-4. seeding first-run memory
+3. bootstrapping Docker if you want the full pipeline
+4. seeding the first durable memory nodes
 
-The full setup walkthrough lives in [docs/setup-from-clone.md](./docs/setup-from-clone.md).
+The full setup guide is here:
+
+- [docs/setup-from-clone.md](./docs/setup-from-clone.md)
 
 ---
 
-## Five-Minute Tour
+## Five-Minute First Success
 
-After install, these are the first commands worth using:
+If you want to feel the system immediately, do this:
 
-| Command | What it does |
-|---------|--------------|
-| `/memory-onboard` | first-run setup, graph root selection, runtime selection, initial memory seeding |
-| `/memory-status` | reports graph state, runtime, counts, warnings, and pending jobs |
-| `/memory-search <query>` | keyword search across the graph |
-| `/memory-morning-kickoff` | produces a repo-specific start-of-day operating brief |
-| `/recall <query>` | deeper search with edge traversal and optional full-node reading |
-| `/memory-connect-inputs` | host-side external input setup for brief flows |
-| `/memory-input-refresh` | refreshes configured external-input sources |
-
-And if you want the raw tool surface:
+### Step 1: Initialize
 
 ```text
-graph_memory(action="status")
-graph_memory(action="recall", query="deployment naming", depth=2)
-graph_memory(action="remember", path="preferences/review_style", gist="Prefers direct reviews", content="Lead with findings, not fluff.", confidence=0.9, pinned=true)
+/memory-onboard
+```
+
+### Step 2: Check Status
+
+```text
+/memory-status
+```
+
+You should see a graph root, initialization state, runtime mode, node count, and warning summary.
+
+### Step 3: Teach It Something Durable
+
+```text
+graph_memory(
+  action="remember",
+  path="preferences/review_style",
+  gist="Prefers direct reviews with findings first.",
+  content="Lead with concrete bugs and risks before recap. Skip fluff.",
+  tags=["preferences", "review"],
+  confidence=0.9,
+  pinned=true
+)
+```
+
+### Step 4: Recall It
+
+```text
+/recall review style
+```
+
+or:
+
+```text
+graph_memory(action="recall", query="review style", depth=2)
+```
+
+### Step 5: Inspect History
+
+```text
 graph_memory(action="history")
 ```
+
+At that point you have already used the system for:
+
+- memory write
+- memory retrieval
+- memory-aware status inspection
+- graph-backed persistence
 
 More examples:
 
@@ -222,30 +298,60 @@ More examples:
 
 ---
 
+## The Main Command Surface
+
+| Command | Job |
+|---|---|
+| `/memory-onboard` | first-run setup, storage choice, runtime choice, memory seeding |
+| `/memory-status` | graph + runtime health snapshot |
+| `/memory-search <query>` | keyword search across graph knowledge |
+| `/memory-morning-kickoff` | repo-specific start-of-day kickoff built from memory |
+| `/recall <query>` | deeper graph lookup with edge traversal |
+| `/memory-connect-inputs` | host-side external-input setup for briefing flows |
+| `/memory-input-refresh` | refreshes configured external-input sources |
+
+And the MCP tool surface:
+
+```text
+graph_memory(action="initialize", graphRoot="...")
+graph_memory(action="configure_runtime", runtimeMode="docker")
+graph_memory(action="status")
+graph_memory(action="remember", ...)
+graph_memory(action="search", query="...")
+graph_memory(action="recall", query="...", depth=2)
+graph_memory(action="read_node", path="...")
+graph_memory(action="list_edges", path="...")
+graph_memory(action="history")
+graph_memory(action="revert", path="<commit>")
+```
+
+---
+
 ## Runtime Modes
 
 ### Manual
 
-Use this if you want the simplest setup.
+Use this if you want the simplest working setup.
 
 - MCP tool + graph storage
 - no daemon container
-- good for testing or low-complexity usage
+- good for testing, experimentation, or smaller workflows
 
 ### Docker Daemon
 
-Use this if you want the system to feel like an actual memory runtime instead of a passive storage layer.
+Use this if you want the system to behave like a full memory runtime instead of a passive store.
 
-- host Claude Code stays interactive
+- Claude Code stays on the host
 - graph root stays on the host
 - daemon and bounded workers run in Docker
-- runtime helpers handle bootstrap, health checks, auth, and status
+- helper scripts manage bootstrap, health, auth, and status
 
-Helpful scripts:
+Useful helpers:
 
 - `bin/docker-bootstrap.sh`
 - `bin/docker-doctor.sh`
 - `bin/docker-auth-check.sh`
+- `bin/docker-build.sh`
 - `bin/docker-start.sh`
 - `bin/docker-stop.sh`
 - `bin/docker-status.sh`
@@ -255,9 +361,30 @@ Helpful scripts:
 
 ---
 
+## What Gets Installed
+
+Running `graph-memory-plugin/bin/install.sh`:
+
+1. installs plugin dependencies if needed
+2. builds the plugin
+3. symlinks the plugin into `~/.claude/plugins/graph-memory`
+4. registers the MCP server in `~/.claude.json`
+5. installs slash commands into `~/.claude/commands/`
+6. registers Claude Code hooks in `~/.claude/settings.json`
+
+That gives you:
+
+- a live MCP server
+- command entrypoints
+- auto-loaded startup context
+- session capture hooks
+- session-end consolidation hooks
+
+---
+
 ## What Lives In The Graph Root
 
-By default the graph root lives at `~/.graph-memory/`, with a pointer file at `~/.graph-memory-config.yml`.
+By default, the graph root lives at `~/.graph-memory/`, with a pointer file at `~/.graph-memory-config.yml`.
 
 A healthy graph root looks roughly like this:
 
@@ -266,10 +393,10 @@ A healthy graph root looks roughly like this:
   nodes/                 durable memory nodes
   archive/               decayed or retired memory
   dreams/                speculative fragments
-  briefs/daily/          morning brief markdown + JSON
+  briefs/daily/          daily brief markdown + JSON
   working/               global + per-project working context
   .buffer/               recent interaction buffer
-  .deltas/               extracted changes waiting for consolidation
+  .deltas/               extracted changes awaiting consolidation
   .jobs/                 queued/running/done/failed pipeline jobs
   .pipeline-logs/        worker logs
   .sessions/             per-session traces
@@ -281,74 +408,71 @@ A healthy graph root looks roughly like this:
   manifest.yml           graph metadata
 ```
 
-This is one of the system’s best properties: your memory is just files.
+This is one of the project’s best properties:
 
-You can inspect it with your editor, diff it with git, back it up normally, and understand it without reverse-engineering a hidden service.
+> your memory is just files
 
----
-
-## What Makes It Different
-
-### Filesystem First
-
-The filesystem is the database.
-
-No embeddings required. No retrieval service required. No mystery ranking layer required.
-
-### Behavioral Memory, Not Just Fact Storage
-
-The system does not only remember facts like:
-
-- names
-- repos
-- preferences
-- decisions
-
-It also tries to remember behavioral patterns:
-
-- how you like tradeoffs presented
-- what kinds of agent behavior you keep correcting
-- where the assistant tends to waste time
-- what repo-specific rules should become durable guidance
-
-### Memory That Can Fade
-
-Bad memory systems only accumulate.
-
-This one has explicit space for:
-
-- decay
-- archive
-- resurfacing
-- compaction
-- topology changes
-
-That matters because a memory system that never forgets eventually becomes unreadable.
+That keeps the system legible.
 
 ---
 
-## If You Want The Full Experience
+## What A Fresh Clone Actually Contains
 
-Start here:
+Main surfaces:
+
+- [`graph-memory-plugin/`](./graph-memory-plugin/): the installable plugin
+- [`memory-dashboard/`](./memory-dashboard/): optional local inspection UI
+- [`docs/`](./docs/): setup and repo notes
+- [`examples/`](./examples/): concrete command, tool, skill, and SDK examples
+
+Older or auxiliary development surfaces:
+
+- [`src/`](./src/)
+- [`tests/`](./tests/)
+- [`public/`](./public/)
+- [`graph-memory/`](./graph-memory/)
+- [`test-app/`](./test-app/)
+
+The center of gravity is the plugin.
+
+If you are evaluating the project, start there.
+
+---
+
+## State Of The Project
+
+### Stable Core
+
+- graph-backed durable memory
+- MCP tool surface
+- startup context artifacts
+- git-backed memory history
+- plugin install flow
+
+### Advanced But Worth Using
+
+- Docker daemon runtime
+- structured pipeline jobs
+- graph decay / archive / resurface behavior
+- richer command-driven workflows
+
+### Actively Evolving Surfaces
+
+- morning briefing / kickoff flows
+- tool and assistant trace analysis
+- external-input ingestion
+- dashboard breadth
+
+That split is deliberate. The README should help you understand both what is dependable now and what is expanding quickly.
+
+---
+
+## Read Next
 
 1. [docs/setup-from-clone.md](./docs/setup-from-clone.md)
 2. [graph-memory-plugin/README.md](./graph-memory-plugin/README.md)
 3. [examples/claude-code-commands.md](./examples/claude-code-commands.md)
 4. [examples/mcp-tool-actions.md](./examples/mcp-tool-actions.md)
+5. [examples/skill-usage.md](./examples/skill-usage.md)
 
-Then, if you want to explore the observability side:
-
-- start the dashboard in [`memory-dashboard/`](./memory-dashboard/)
-- inspect the session traces
-- inspect `MAP.md`, `PRIORS.md`, and `WORKING.md`
-- watch the pipeline logs
-
----
-
-## Current State Of The Repo
-
-This repository contains both the active plugin and some adjacent development surfaces.
-
-The center of gravity is the plugin in [`graph-memory-plugin/`](./graph-memory-plugin/). That is the part to install, understand, and evaluate first.
-
-If you are here because you want an agent with a memory, start there.
+If you are here because you want an agent with a memory, that path will get you there fast.
