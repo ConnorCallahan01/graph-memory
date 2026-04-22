@@ -1,0 +1,193 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 860" font-family="Georgia, 'Times New Roman', serif">
+  <defs>
+    <style>
+      .h       { font-size: 22px; font-weight: 700; letter-spacing: 2.5px; fill: #1a1a1a; }
+      .sub     { font-size: 14px; font-style: italic; fill: #6b6b6b; }
+      .lane    { font-size: 11px; font-weight: 700; letter-spacing: 2px; fill: #777; }
+      .time    { font-size: 11px; font-weight: 700; letter-spacing: 1.5px; fill: #555; }
+      .event   { font-size: 12px; fill: #1a1a1a; }
+      .eventb  { font-size: 12px; font-weight: 700; fill: #1a1a1a; }
+      .note    { font-size: 10.5px; font-style: italic; fill: #666; }
+      .neuro   { font-size: 11px; font-style: italic; fill: #5b4e8a; }
+      .cap     { font-size: 13px; font-style: italic; fill: #555; }
+      .sync    { fill: none; stroke: #333; stroke-width: 1.2; marker-end: url(#ahs); }
+      .async   { fill: none; stroke: #5b4e8a; stroke-width: 1.2; stroke-dasharray: 5 4; marker-end: url(#aha); }
+      .tick    { fill: none; stroke: #bfbfbf; stroke-width: 1; stroke-dasharray: 3 4; }
+      .laneRule{ fill: none; stroke: #d4d4d4; stroke-width: 1; }
+      .node    { fill: #fafafa; stroke: #333; stroke-width: 1.2; }
+      .hook    { fill: #fff7ef; stroke: #8a5a3e; stroke-width: 1.2; }
+      .agent   { fill: #f2eff7; stroke: #5b4e8a; stroke-width: 1.2; }
+      .file    { fill: #f5f5f5; stroke: #888; stroke-width: 1.1; }
+    </style>
+    <marker id="ahs" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#333"/>
+    </marker>
+    <marker id="aha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5b4e8a"/>
+    </marker>
+  </defs>
+
+  <text x="750" y="46" text-anchor="middle" class="h">SESSION LIFECYCLE</text>
+  <text x="750" y="70" text-anchor="middle" class="sub">one Claude Code session, with graph-memory attached</text>
+  <line x1="470" y1="86" x2="1030" y2="86" stroke="#cccccc" stroke-width="1"/>
+
+  <g>
+    <line x1="180" y1="112" x2="1480" y2="112" stroke="#bbb" stroke-width="1"/>
+    <text x="290"  y="128" text-anchor="middle" class="time">SESSION START</text>
+    <text x="520"  y="128" text-anchor="middle" class="time">NORMAL MESSAGE LOOP</text>
+    <text x="770"  y="128" text-anchor="middle" class="time">EVERY 10TH MESSAGE</text>
+    <text x="1090" y="128" text-anchor="middle" class="time">CASCADE THRESHOLD</text>
+    <text x="1410" y="128" text-anchor="middle" class="time">SESSION END</text>
+    <line x1="290"  y1="140" x2="290"  y2="750" class="tick"/>
+    <line x1="520"  y1="140" x2="520"  y2="750" class="tick"/>
+    <line x1="770"  y1="140" x2="770"  y2="750" class="tick"/>
+    <line x1="1090" y1="140" x2="1090" y2="750" class="tick"/>
+    <line x1="1410" y1="140" x2="1410" y2="750" class="tick"/>
+  </g>
+
+  <text x="40" y="195" class="lane">YOU</text>
+  <line x1="180" y1="218" x2="1480" y2="218" class="laneRule"/>
+  <g transform="translate(520,180)">
+    <rect x="-75" y="0" width="150" height="32" rx="4" class="node"/>
+    <text x="0" y="20" text-anchor="middle" class="event">type a message</text>
+  </g>
+  <g transform="translate(770,180)">
+    <rect x="-75" y="0" width="150" height="32" rx="4" class="node"/>
+    <text x="0" y="20" text-anchor="middle" class="event">type a message</text>
+  </g>
+  <g transform="translate(1090,180)">
+    <rect x="-75" y="0" width="150" height="32" rx="4" class="node"/>
+    <text x="0" y="20" text-anchor="middle" class="event">type a message</text>
+  </g>
+
+  <text x="40" y="265" class="lane">CLAUDE</text>
+  <line x1="180" y1="292" x2="1480" y2="292" class="laneRule"/>
+  <g transform="translate(290,250)">
+    <rect x="-90" y="0" width="180" height="34" rx="4" class="node"/>
+    <text x="0" y="21" text-anchor="middle" class="event">starts with memory loaded</text>
+  </g>
+  <g transform="translate(520,250)">
+    <rect x="-85" y="0" width="170" height="34" rx="4" class="node"/>
+    <text x="0" y="21" text-anchor="middle" class="event">responds with context</text>
+  </g>
+  <g transform="translate(770,250)">
+    <rect x="-65" y="0" width="130" height="34" rx="4" class="node"/>
+    <text x="0" y="21" text-anchor="middle" class="event">responds</text>
+  </g>
+  <g transform="translate(1090,250)">
+    <rect x="-65" y="0" width="130" height="34" rx="4" class="node"/>
+    <text x="0" y="21" text-anchor="middle" class="event">responds</text>
+  </g>
+
+  <line x1="520"  y1="215" x2="520"  y2="247" class="sync"/>
+  <line x1="770"  y1="215" x2="770"  y2="247" class="sync"/>
+  <line x1="1090" y1="215" x2="1090" y2="247" class="sync"/>
+
+  <text x="40" y="345" class="lane">HOOKS</text>
+  <line x1="180" y1="382" x2="1480" y2="382" class="laneRule"/>
+  <g transform="translate(290,330)">
+    <rect x="-90" y="0" width="180" height="42" rx="5" class="hook"/>
+    <text x="0" y="17" text-anchor="middle" class="eventb">SessionStart</text>
+    <text x="0" y="33" text-anchor="middle" class="note">loads MAP, PRIORS, working context</text>
+  </g>
+  <g transform="translate(520,330)">
+    <rect x="-90" y="0" width="180" height="42" rx="5" class="hook"/>
+    <text x="0" y="17" text-anchor="middle" class="eventb">UserPromptSubmit</text>
+    <text x="0" y="33" text-anchor="middle" class="note">recall + inject useful nodes</text>
+  </g>
+  <g transform="translate(770,330)">
+    <rect x="-90" y="0" width="180" height="42" rx="5" class="hook"/>
+    <text x="0" y="17" text-anchor="middle" class="eventb">Stop / tracing</text>
+    <text x="0" y="33" text-anchor="middle" class="note">assistant output + tool traces captured</text>
+  </g>
+  <g transform="translate(1090,330)">
+    <rect x="-90" y="0" width="180" height="42" rx="5" class="hook"/>
+    <text x="0" y="17" text-anchor="middle" class="eventb">threshold markers</text>
+    <text x="0" y="33" text-anchor="middle" class="note">scribe / consolidation work queued</text>
+  </g>
+  <g transform="translate(1410,330)">
+    <rect x="-80" y="0" width="160" height="42" rx="5" class="hook"/>
+    <text x="0" y="17" text-anchor="middle" class="eventb">SessionEnd</text>
+    <text x="0" y="33" text-anchor="middle" class="note">close out and trigger final pass</text>
+  </g>
+
+  <text x="40" y="440" class="lane">BACKGROUND</text>
+  <text x="40" y="456" class="lane" fill="#5b4e8a">(DETACHED)</text>
+  <line x1="180" y1="478" x2="1480" y2="478" class="laneRule"/>
+  <g transform="translate(770,495)">
+    <rect x="-85" y="0" width="170" height="54" rx="6" class="agent"/>
+    <text x="0" y="20" text-anchor="middle" class="eventb">SCRIBE</text>
+    <text x="0" y="37" text-anchor="middle" class="neuro">extracts structured deltas</text>
+    <text x="0" y="50" text-anchor="middle" class="note">writes delta + summary artifacts</text>
+  </g>
+  <g transform="translate(960,502)">
+    <rect x="-55" y="0" width="110" height="42" rx="5" class="agent" fill="#f7f0e6" stroke="#8a5a3e"/>
+    <text x="0" y="18" text-anchor="middle" class="eventb">AUDITOR</text>
+    <text x="0" y="33" text-anchor="middle" class="neuro" fill="#8a5a3e">mechanical triage</text>
+  </g>
+  <g transform="translate(1095,502)">
+    <rect x="-55" y="0" width="110" height="42" rx="5" class="agent"/>
+    <text x="0" y="18" text-anchor="middle" class="eventb">LIBRARIAN</text>
+    <text x="0" y="33" text-anchor="middle" class="neuro">graph integration</text>
+  </g>
+  <g transform="translate(1230,502)">
+    <rect x="-55" y="0" width="110" height="42" rx="5" class="agent"/>
+    <text x="0" y="18" text-anchor="middle" class="eventb">DREAMER</text>
+    <text x="0" y="33" text-anchor="middle" class="neuro">creative recombination</text>
+  </g>
+  <line x1="1015" y1="523" x2="1040" y2="523" class="sync"/>
+  <line x1="1150" y1="523" x2="1175" y2="523" class="sync"/>
+  <line x1="770"  y1="374" x2="770"  y2="492" class="async"/>
+  <line x1="1090" y1="374" x2="980"  y2="497" class="async"/>
+
+  <text x="1095" y="568" text-anchor="middle" class="note">heavy work is detached from the live conversation loop</text>
+  <text x="1095" y="586" text-anchor="middle" class="note">the point is memory continuity without hot-path latency</text>
+
+  <text x="40" y="625" class="lane">GRAPH ON DISK</text>
+  <line x1="180" y1="668" x2="1480" y2="668" class="laneRule"/>
+  <g transform="translate(290,635)">
+    <rect x="-135" y="0" width="270" height="32" rx="4" class="file"/>
+    <text x="0" y="20" text-anchor="middle" class="event">MAP · PRIORS · WORKING · DREAMS · SOMA</text>
+  </g>
+  <g transform="translate(770,635)">
+    <rect x="-70" y="0" width="140" height="32" rx="4" class="file"/>
+    <text x="0" y="20" text-anchor="middle" class="event">.deltas/ appended</text>
+  </g>
+  <g transform="translate(1095,635)">
+    <rect x="-95" y="0" width="190" height="32" rx="4" class="file"/>
+    <text x="0" y="20" text-anchor="middle" class="event">nodes + context rewritten</text>
+  </g>
+  <g transform="translate(1410,635)">
+    <rect x="-55" y="0" width="110" height="32" rx="4" class="file"/>
+    <text x="0" y="20" text-anchor="middle" class="event">git commit</text>
+  </g>
+
+  <line x1="250" y1="635" x2="250" y2="286" class="async"/>
+  <line x1="480" y1="635" x2="480" y2="372" class="async"/>
+  <line x1="770" y1="549" x2="770" y2="632" class="async"/>
+  <line x1="1095" y1="544" x2="1095" y2="632" class="async"/>
+  <line x1="1230" y1="544" x2="1380" y2="632" class="async"/>
+
+  <text x="750" y="722" text-anchor="middle" class="note">
+    Claude can still call the graph_memory MCP tool directly during the session for explicit recall and explicit remember.
+  </text>
+
+  <g transform="translate(240,770)">
+    <text x="0" y="0" class="lane">LEGEND</text>
+    <line x1="70" y1="-4" x2="110" y2="-4" stroke="#333" stroke-width="1.2" marker-end="url(#ahs)"/>
+    <text x="118" y="-1" class="note">synchronous</text>
+    <line x1="220" y1="-4" x2="260" y2="-4" stroke="#5b4e8a" stroke-width="1.2" stroke-dasharray="5 4" marker-end="url(#aha)"/>
+    <text x="268" y="-1" class="note">async / detached</text>
+    <rect x="430" y="-14" width="22" height="14" class="hook"/>
+    <text x="458" y="-1" class="note">hook</text>
+    <rect x="540" y="-14" width="22" height="14" class="agent"/>
+    <text x="568" y="-1" class="note">background stage</text>
+    <rect x="710" y="-14" width="22" height="14" class="file"/>
+    <text x="738" y="-1" class="note">artifact on disk</text>
+  </g>
+
+  <text x="750" y="830" text-anchor="middle" class="cap">
+    The conversation never has to wait for the full memory system to think.
+  </text>
+</svg>

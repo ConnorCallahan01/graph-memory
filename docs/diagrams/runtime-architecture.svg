@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 760" font-family="Georgia, 'Times New Roman', serif">
+  <defs>
+    <style>
+      .title { font-size: 28px; font-weight: 700; letter-spacing: 2px; fill: #1a1a1a; }
+      .sub { font-size: 14px; font-style: italic; fill: #6f6b66; }
+      .lane { font-size: 12px; font-weight: 700; letter-spacing: 2px; fill: #70685d; }
+      .box { fill: #faf8f4; stroke: #2f2a24; stroke-width: 1.3; rx: 8; }
+      .hook { fill: #fff6ea; stroke: #8a5a3e; stroke-width: 1.3; rx: 8; }
+      .agent { fill: #f3eef8; stroke: #5b4e8a; stroke-width: 1.3; rx: 8; }
+      .file { fill: #f4f1ec; stroke: #8b857c; stroke-width: 1.2; rx: 8; }
+      .label { font-size: 17px; font-weight: 700; fill: #1a1a1a; }
+      .body { font-size: 13px; fill: #24211c; }
+      .small { font-size: 11px; font-style: italic; fill: #6f6b66; }
+      .rule { stroke: #d7d1c8; stroke-width: 1; }
+      .sync { fill: none; stroke: #2f2a24; stroke-width: 1.35; marker-end: url(#ah1); }
+      .async { fill: none; stroke: #5b4e8a; stroke-width: 1.35; stroke-dasharray: 5 4; marker-end: url(#ah2); }
+    </style>
+    <marker id="ah1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2f2a24"/>
+    </marker>
+    <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#5b4e8a"/>
+    </marker>
+  </defs>
+
+  <text x="700" y="44" text-anchor="middle" class="title">RUNTIME ARCHITECTURE</text>
+  <text x="700" y="68" text-anchor="middle" class="sub">Claude Code stays interactive on the host while memory accumulates beside it</text>
+  <line x1="370" y1="86" x2="1030" y2="86" class="rule"/>
+
+  <text x="40" y="155" class="lane">HOST</text>
+  <line x1="140" y1="172" x2="1320" y2="172" class="rule"/>
+
+  <rect x="180" y="120" width="210" height="72" class="box"/>
+  <text x="285" y="150" text-anchor="middle" class="label">Claude Code</text>
+  <text x="285" y="173" text-anchor="middle" class="small">interactive conversation loop</text>
+
+  <rect x="455" y="102" width="250" height="108" class="hook"/>
+  <text x="580" y="132" text-anchor="middle" class="label">hooks</text>
+  <text x="580" y="156" text-anchor="middle" class="body">session-start</text>
+  <text x="580" y="176" text-anchor="middle" class="body">user-message / assistant-response</text>
+  <text x="580" y="196" text-anchor="middle" class="body">pre-tool / post-tool / session-end</text>
+
+  <rect x="775" y="120" width="250" height="72" class="box"/>
+  <text x="900" y="150" text-anchor="middle" class="label">graph_memory MCP tool</text>
+  <text x="900" y="173" text-anchor="middle" class="small">recall, search, remember, inspect, revert</text>
+
+  <line x1="390" y1="156" x2="455" y2="156" class="sync"/>
+  <line x1="705" y1="156" x2="775" y2="156" class="sync"/>
+
+  <text x="40" y="310" class="lane">GRAPH ROOT</text>
+  <line x1="140" y1="328" x2="1320" y2="328" class="rule"/>
+
+  <rect x="220" y="266" width="220" height="92" class="file"/>
+  <text x="330" y="294" text-anchor="middle" class="label">knowledge files</text>
+  <text x="330" y="318" text-anchor="middle" class="body">nodes/</text>
+  <text x="330" y="338" text-anchor="middle" class="body">archive/</text>
+
+  <rect x="505" y="248" width="250" height="128" class="file"/>
+  <text x="630" y="276" text-anchor="middle" class="label">context artifacts</text>
+  <text x="630" y="300" text-anchor="middle" class="body">MAP.md</text>
+  <text x="630" y="320" text-anchor="middle" class="body">PRIORS.md</text>
+  <text x="630" y="340" text-anchor="middle" class="body">WORKING.md / DREAMS.md / SOMA.md</text>
+
+  <rect x="830" y="248" width="290" height="128" class="file"/>
+  <text x="975" y="276" text-anchor="middle" class="label">live state</text>
+  <text x="975" y="300" text-anchor="middle" class="body">.buffer/ .deltas/ .jobs/</text>
+  <text x="975" y="320" text-anchor="middle" class="body">.sessions/ .pipeline-logs/ briefs/</text>
+  <text x="975" y="340" text-anchor="middle" class="body">runtime config + manifest</text>
+
+  <line x1="580" y1="210" x2="580" y2="248" class="async"/>
+  <line x1="900" y1="192" x2="900" y2="248" class="async"/>
+
+  <text x="40" y="490" class="lane">OPTIONAL DOCKER RUNTIME</text>
+  <line x1="140" y1="508" x2="1320" y2="508" class="rule"/>
+
+  <rect x="340" y="540" width="140" height="54" class="agent"/>
+  <text x="410" y="572" text-anchor="middle" class="label">scribe</text>
+
+  <rect x="560" y="540" width="140" height="54" class="agent"/>
+  <text x="630" y="572" text-anchor="middle" class="label">auditor</text>
+
+  <rect x="780" y="540" width="140" height="54" class="agent"/>
+  <text x="850" y="572" text-anchor="middle" class="label">librarian</text>
+
+  <rect x="1000" y="540" width="140" height="54" class="agent"/>
+  <text x="1070" y="572" text-anchor="middle" class="label">dreamer</text>
+
+  <line x1="480" y1="567" x2="560" y2="567" class="sync"/>
+  <line x1="700" y1="567" x2="780" y2="567" class="sync"/>
+  <line x1="920" y1="567" x2="1000" y2="567" class="sync"/>
+
+  <line x1="975" y1="376" x2="975" y2="540" class="async"/>
+  <text x="995" y="458" class="small">queued work, traces, and brief inputs</text>
+
+  <text x="700" y="676" text-anchor="middle" class="body">Host stays responsive. Expensive memory work runs off the hot path.</text>
+</svg>

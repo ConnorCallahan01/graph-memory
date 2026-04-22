@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 460" font-family="Georgia, 'Times New Roman', serif">
+  <defs>
+    <style>
+      .title { font-size: 28px; font-weight: 700; letter-spacing: 2px; fill: #1a1a1a; }
+      .sub { font-size: 14px; font-style: italic; fill: #6f6b66; }
+      .box { fill: #faf8f4; stroke: #2f2a24; stroke-width: 1.4; rx: 8; }
+      .accent { fill: #fff6ea; stroke: #8a5a3e; stroke-width: 1.4; rx: 8; }
+      .file { fill: #f4f1ec; stroke: #8b857c; stroke-width: 1.2; rx: 8; }
+      .label { font-size: 18px; font-weight: 700; fill: #1a1a1a; }
+      .body { font-size: 14px; fill: #24211c; }
+      .small { font-size: 12px; font-style: italic; fill: #6f6b66; }
+      .arrow { fill: none; stroke: #2f2a24; stroke-width: 1.4; marker-end: url(#ah); }
+      .rule { stroke: #d2ccc3; stroke-width: 1; }
+    </style>
+    <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#2f2a24"/>
+    </marker>
+  </defs>
+
+  <text x="600" y="42" text-anchor="middle" class="title">INSTALL FLOW</text>
+  <text x="600" y="66" text-anchor="middle" class="sub">what a fresh clone turns into on a Claude Code machine</text>
+  <line x1="340" y1="84" x2="860" y2="84" class="rule"/>
+
+  <rect x="80" y="150" width="190" height="72" class="box"/>
+  <text x="175" y="180" text-anchor="middle" class="label">clone repo</text>
+  <text x="175" y="203" text-anchor="middle" class="small">start in the root, but install from</text>
+  <text x="175" y="219" text-anchor="middle" class="small">graph-memory-plugin/</text>
+
+  <rect x="325" y="150" width="220" height="72" class="accent"/>
+  <text x="435" y="180" text-anchor="middle" class="label">./bin/install.sh</text>
+  <text x="435" y="203" text-anchor="middle" class="small">builds, links, registers MCP,</text>
+  <text x="435" y="219" text-anchor="middle" class="small">installs slash skill commands + hooks</text>
+
+  <rect x="600" y="132" width="220" height="108" class="file"/>
+  <text x="710" y="160" text-anchor="middle" class="label">writes into ~/.claude</text>
+  <text x="710" y="187" text-anchor="middle" class="body">plugins/graph-memory</text>
+  <text x="710" y="208" text-anchor="middle" class="body">commands/</text>
+  <text x="710" y="229" text-anchor="middle" class="body">settings.json</text>
+
+  <rect x="875" y="150" width="245" height="72" class="box"/>
+  <text x="997" y="180" text-anchor="middle" class="label">open Claude Code</text>
+  <text x="997" y="203" text-anchor="middle" class="small">run /memory-onboard and choose</text>
+  <text x="997" y="219" text-anchor="middle" class="small">manual or Docker runtime</text>
+
+  <line x1="270" y1="186" x2="325" y2="186" class="arrow"/>
+  <line x1="545" y1="186" x2="600" y2="186" class="arrow"/>
+  <line x1="820" y1="186" x2="875" y2="186" class="arrow"/>
+
+  <text x="600" y="314" text-anchor="middle" class="label">after this, Claude Code has a memory surface</text>
+  <text x="600" y="340" text-anchor="middle" class="body">MCP tool: graph_memory</text>
+  <text x="600" y="362" text-anchor="middle" class="body">slash skill commands: onboard, status, search, kickoff, recall, input flows</text>
+  <text x="600" y="392" text-anchor="middle" class="small">install is mostly “wire Claude Code into a graph root and teach it how to carry context forward”</text>
+</svg>

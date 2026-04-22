@@ -52,84 +52,15 @@ If you cloned this repo, pick the path that matches what you want:
 
 ### 1. Install Flow
 
-```text
-clone repo
-   |
-   v
-cd graph-memory/graph-memory-plugin
-   |
-   v
-./bin/install.sh
-   |
-   +--> builds plugin
-   +--> links into ~/.claude/plugins/graph-memory
-   +--> registers MCP server in ~/.claude.json
-   +--> installs slash commands in ~/.claude/commands/
-   +--> registers Claude Code hooks in ~/.claude/settings.json
-   |
-   v
-open Claude Code
-   |
-   v
-/memory-onboard
-```
+![Install flow](./docs/diagrams/install-flow.svg)
 
 ### 2. Runtime Architecture
 
-```text
-          host machine
-  -----------------------------------
-  Claude Code
-     |
-     +--> hooks capture:
-     |    - session start
-     |    - user messages
-     |    - assistant output
-     |    - tool traces
-     |    - session end
-     |
-     +--> graph_memory MCP tool
-     |
-     v
-  graph root on disk
-     |
-     +--> nodes/
-     +--> archive/
-     +--> MAP.md
-     +--> PRIORS.md
-     +--> WORKING.md
-     +--> DREAMS.md
-     +--> briefs/
-     +--> .buffer/ .deltas/ .jobs/ .sessions/
-     |
-     v
-  optional Docker daemon
-     |
-     v
-  scribe -> auditor -> librarian -> dreamer
-```
+![Runtime architecture](./docs/diagrams/runtime-architecture.svg)
 
 ### 3. Memory Lifecycle
 
-```text
-conversation happens
-      |
-      v
-hooks + buffers capture what mattered
-      |
-      v
-scribe extracts deltas
-      |
-      v
-librarian updates graph structure and context artifacts
-      |
-      +--> strong memory stays active
-      +--> weak/stale memory decays
-      +--> archived memory can be resurfaced
-      |
-      v
-next session starts with MAP + PRIORS + WORKING
-```
+![Session lifecycle](./docs/diagrams/session-lifecycle.svg)
 
 ---
 
@@ -298,9 +229,11 @@ More examples:
 
 ---
 
-## The Main Command Surface
+## The Main Skill-Command Surface
 
-| Command | Job |
+These slash entries are technically skill commands installed into Claude Code.
+
+| Skill command | Job |
 |---|---|
 | `/memory-onboard` | first-run setup, storage choice, runtime choice, memory seeding |
 | `/memory-status` | graph + runtime health snapshot |
@@ -369,7 +302,7 @@ Running `graph-memory-plugin/bin/install.sh`:
 2. builds the plugin
 3. symlinks the plugin into `~/.claude/plugins/graph-memory`
 4. registers the MCP server in `~/.claude.json`
-5. installs slash commands into `~/.claude/commands/`
+5. installs slash skill commands into `~/.claude/commands/`
 6. registers Claude Code hooks in `~/.claude/settings.json`
 
 That gives you:
