@@ -1,10 +1,12 @@
-# graph-memory
+# Cogni-Code
 
 <div align="center">
 
+<img src="./docs/branding/cogni-code-logo.svg" alt="Cogni-Code logo" width="760" />
+
 ## Give your agent a past
 
-**A filesystem-first memory graph for Claude Code and long-lived AI workflows**
+**The home of the `graph-memory` plugin for Claude Code and long-lived AI workflows**
 
 *Not a vector DB. Not a prompt scrapbook. Not a black box.*
 
@@ -20,7 +22,7 @@ Most agent sessions are brilliant and disposable.
 
 The model learns your style, adapts to a repo, notices recurring mistakes, and starts to become useful in a deeper way. Then the session ends, and tomorrow it begins again from zero.
 
-`graph-memory` is an attempt to fix that without hiding memory behind infrastructure you cannot inspect.
+`Cogni-Code` packages the `graph-memory` plugin as a public, inspectable memory system without hiding memory behind infrastructure you cannot inspect.
 
 It stores memory as markdown nodes, compresses the graph into prompt-ready artifacts like `MAP.md` and `PRIORS.md`, gives Claude Code a real memory tool surface, and optionally runs a background pipeline that turns recent interaction history into structured graph updates.
 
@@ -139,8 +141,8 @@ That is the interesting part.
 ## Quick Start
 
 ```bash
-git clone https://github.com/ConnorCallahan01/graph-memory.git
-cd graph-memory/graph-memory-plugin
+git clone https://github.com/ConnorCallahan01/cogni-code.git
+cd cogni-code/graph-memory-plugin
 ./bin/install.sh
 ```
 

@@ -13,8 +13,8 @@ This is the public setup path for someone cloning the repository and installing 
 ## 1. Clone The Repository
 
 ```bash
-git clone https://github.com/<your-org>/graph-memory.git
-cd graph-memory
+git clone https://github.com/ConnorCallahan01/cogni-code.git
+cd cogni-code
 ```
 
 The plugin lives in [`graph-memory-plugin/`](../graph-memory-plugin/). The root `src/` and `tests/` directories are legacy prototype material and are not required for installation.

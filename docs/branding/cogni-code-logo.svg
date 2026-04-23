@@ -1,0 +1,37 @@
+<svg width="1200" height="320" viewBox="0 0 1200 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <title>Cogni-Code logo</title>
+  <desc>Brain-shaped graph mark with Cogni-Code wordmark.</desc>
+  <g stroke="#232323" stroke-width="4" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M88 186L112 136" />
+    <path d="M112 136L164 116" />
+    <path d="M164 116L214 116" />
+    <path d="M214 116L262 140" />
+    <path d="M262 140L274 186" />
+    <path d="M274 186L248 214" />
+    <path d="M248 214L218 204" />
+    <path d="M218 204L192 228" />
+    <path d="M192 228L186 270" />
+    <path d="M218 204L164 186" />
+    <path d="M164 186L164 116" />
+    <path d="M164 186L112 136" />
+    <path d="M164 186L88 186" />
+    <path d="M218 204L262 140" />
+    <path d="M218 204L274 186" />
+  </g>
+  <g fill="#F7F3ED" stroke="#232323" stroke-width="4">
+    <circle cx="88" cy="186" r="10" />
+    <circle cx="112" cy="136" r="10" />
+    <circle cx="164" cy="116" r="10" />
+    <circle cx="214" cy="116" r="10" />
+    <circle cx="262" cy="140" r="10" />
+    <circle cx="274" cy="186" r="10" />
+    <circle cx="248" cy="214" r="10" />
+    <circle cx="218" cy="204" r="10" />
+    <circle cx="192" cy="228" r="10" />
+    <circle cx="186" cy="270" r="10" />
+    <circle cx="164" cy="186" r="10" />
+  </g>
+  <text x="364" y="208" fill="#232323" font-family="Georgia, 'Times New Roman', serif" font-size="116" font-weight="400" letter-spacing="0.5">
+    Cogni-<tspan fill="#526B8D">Code</tspan>
+  </text>
+</svg>
