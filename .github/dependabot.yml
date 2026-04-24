@@ -8,6 +8,29 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    groups:
+      root-safe-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "@anthropic-ai/sdk"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
+      - dependency-name: "@anthropic-ai/claude-agent-sdk"
+        update-types:
+          - "version-update:semver-patch"
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
+      - dependency-name: "chokidar"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: "npm"
     directory: "/graph-memory-plugin"
@@ -17,6 +40,20 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    groups:
+      plugin-safe-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "@types/node"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: "npm"
     directory: "/memory-dashboard"
@@ -26,3 +63,23 @@ updates:
     labels:
       - "dependencies"
       - "security"
+    groups:
+      dashboard-safe-updates:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "@vitejs/plugin-react"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "chokidar"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "express"
+        update-types:
+          - "version-update:semver-major"
+      - dependency-name: "typescript"
+        update-types:
+          - "version-update:semver-major"

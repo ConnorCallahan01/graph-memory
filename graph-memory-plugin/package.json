@@ -19,10 +19,10 @@
     "test": "npm run build && node --test tests/*.check.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "gray-matter": "^4.0.3",
     "js-yaml": "^4.1.1",
-    "simple-git": "^3.32.3",
+    "simple-git": "^3.36.0",
     "zod": "^4.0.0"
   },
   "devDependencies": {
