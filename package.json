@@ -16,7 +16,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "latest",
-    "@anthropic-ai/sdk": "^0.78.0",
+    "@anthropic-ai/sdk": "^0.91.0",
     "@modelcontextprotocol/sdk": "^1.27.1",
     "chokidar": "^4.0.0",
     "dotenv": "^16.4.0",
