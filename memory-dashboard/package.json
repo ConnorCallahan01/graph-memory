@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "chokidar": "^4.0.3",
+    "chokidar": "^5.0.0",
     "cors": "^2.8.5",
     "cytoscape": "^3.31.0",
     "cytoscape-cise": "^2.0.1",
