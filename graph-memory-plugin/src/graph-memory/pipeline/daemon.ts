@@ -1034,6 +1034,7 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
       maybeEnqueueSkillforgeJobs();
       maybeEnqueueSkillforgeRefresh();
       scavengeStaleBuffers();
+      requeueStaleRunningJobs(30 * 60_000);
 
       writeDaemonState({
         running: true,
