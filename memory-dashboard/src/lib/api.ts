@@ -58,6 +58,7 @@ export interface PipelineStatus {
   nodeCount: number
   archiveCount: number
   bufferCount: number
+  bufferByProject: Array<{ project: string; count: number; sessionId: string; updatedAt: string }>
   pendingDreams: number
   queuedJobs: number
   runningJobs: number

@@ -348,6 +348,33 @@ a:hover { text-decoration: underline; }
 .cutoff-indicator.queued { background: var(--text-muted); }
 .cutoff-indicator.counting { background: var(--text-muted); opacity: 0.5; }
 
+.rail-buffer-by-project {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.rail-buffer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 2px 0;
+  font-size: var(--text-xs);
+}
+
+.buffer-project {
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 160px;
+}
+
+.buffer-count {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
 .rail-empty-sm {
   font-size: var(--text-xs);
   color: var(--text-muted);

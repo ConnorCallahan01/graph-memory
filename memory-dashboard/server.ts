@@ -376,6 +376,46 @@ function readBufferCount(graphRoot = getGraphRoot()): number {
   return total
 }
 
+interface BufferProjectCount {
+  project: string
+  count: number
+  sessionId: string
+  updatedAt: string
+}
+
+function readBufferCountsByProject(graphRoot = getGraphRoot()): BufferProjectCount[] {
+  const bufferDir = join(getPaths(graphRoot).buffer)
+  if (!existsSync(bufferDir)) return []
+  const byProject = new Map<string, { count: number; sessionId: string; updatedAt: string }>()
+  for (const file of readdirSync(bufferDir)) {
+    if (!file.startsWith('conversation-') || !file.endsWith('.jsonl')) continue
+    const content = readFileSync(join(bufferDir, file), 'utf-8').trim()
+    if (!content) continue
+    const lines = content.split('\n').filter(Boolean)
+    const sessionId = file.replace('conversation-', '').replace('.jsonl', '')
+    let project = 'global'
+    let latestTs = ''
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line)
+        if (entry.project) project = entry.project
+        if (entry.timestamp && entry.timestamp > latestTs) latestTs = entry.timestamp
+      } catch {}
+    }
+    const existing = byProject.get(project)
+    const count = lines.length
+    if (!existing || count > existing.count) {
+      byProject.set(project, { count: (existing?.count || 0) + count, sessionId, updatedAt: latestTs || new Date().toISOString() })
+    } else {
+      existing.count += count
+      if (latestTs > existing.updatedAt) existing.updatedAt = latestTs
+    }
+  }
+  return Array.from(byProject.entries())
+    .map(([project, data]) => ({ project, ...data }))
+    .sort((a, b) => b.count - a.count)
+}
+
 function readLatestActiveProjectEntry(graphRoot = getGraphRoot()): { name: string; gitRoot?: string; cwd?: string; updatedAt: string } | null {
   const activeProjectsDir = getPaths(graphRoot).activeProjects
   if (!existsSync(activeProjectsDir)) return null
@@ -1245,6 +1285,7 @@ app.get('/api/status', (_req, res) => {
       nodeCount,
       archiveCount: countMarkdownFiles(getPaths(graphRoot).archive),
       bufferCount: readBufferCount(graphRoot),
+      bufferByProject: readBufferCountsByProject(graphRoot),
       pendingDreams: countPendingDreams(graphRoot),
       queuedJobs: jobs.totals.queued,
       runningJobs: jobs.totals.running,

@@ -133,6 +133,17 @@ export default function ActivityPanel({
         {!cutoffs.length && (
           <div className="rail-empty-sm">No pipeline activity</div>
         )}
+
+        {status?.bufferByProject && status.bufferByProject.length > 0 && (
+          <div className="rail-buffer-by-project">
+            {status.bufferByProject.map((b) => (
+              <div key={b.project} className="rail-buffer-row">
+                <span className="buffer-project">{b.project === 'global' ? '(global)' : b.project.split('/').pop()}</span>
+                <span className="buffer-count">{b.count} msgs</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {skills.length > 0 && (
