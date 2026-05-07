@@ -1,4 +1,5 @@
 import fs from "fs";
+import path from "path";
 import matter from "gray-matter";
 import { CONFIG } from "../config.js";
 import { activityBus } from "../events.js";
@@ -76,6 +77,7 @@ export function scoreCandidates(inputIndex?: any[]): SkillforgeCandidate[] {
     }
   }
 
+  const manifestDir = CONFIG.paths.skillforgeManifests;
   const candidates: SkillforgeCandidate[] = [];
 
   for (const entry of index) {
@@ -84,6 +86,8 @@ export function scoreCandidates(inputIndex?: any[]): SkillforgeCandidate[] {
     if (!entry.project || entry.project === "global") continue;
     if (isWithinCooldown(entry.skillforged_at)) continue;
     if ((entry.access_count || 0) < CONFIG.skillforge.minAccessCount) continue;
+    const manifestPath = path.join(manifestDir, `${entry.path.replace(/\//g, "-")}.json`);
+    if (fs.existsSync(manifestPath)) continue;
 
     const sf = CONFIG.skillforge;
     const accessNorm = Math.min((entry.access_count || 0) / sf.minAccessCount, 1);
@@ -126,7 +130,12 @@ export function computeNodeContentHash(nodePath: string): string {
   try {
     const raw = fs.readFileSync(fullPath, "utf-8");
     const parsed = matter(raw);
-    const normalized = parsed.content.trim().replace(/\s+/g, " ");
+    const volatileKeys = ["access_count", "recall_action_count", "distinct_sessions", "access_sessions", "last_accessed", "skillforged_at", "skillforge_manifest"];
+    for (const key of volatileKeys) {
+      delete parsed.data[key];
+    }
+    const stable = matter.stringify(parsed.content, parsed.data);
+    const normalized = stable.trim().replace(/\s+/g, " ");
     let hash = 0;
     for (let i = 0; i < normalized.length; i++) {
       const chr = normalized.charCodeAt(i);
