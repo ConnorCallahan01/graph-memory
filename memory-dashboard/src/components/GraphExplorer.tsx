@@ -7,6 +7,7 @@ import {
   GraphNode,
   NodeDetail,
   fetchNode,
+  updateNode,
 } from '../lib/api'
 
 cytoscape.use(fcose)
@@ -68,6 +69,11 @@ export default function GraphExplorer({
   const [nodeDetail, setNodeDetail] = useState<NodeDetail | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [visibleNodes, setVisibleNodes] = useState(NODE_LIST_BATCH)
+  const [editing, setEditing] = useState(false)
+  const [editGist, setEditGist] = useState('')
+  const [editConfidence, setEditConfidence] = useState(0.5)
+  const [editTags, setEditTags] = useState('')
+  const [saving, setSaving] = useState(false)
 
   const cyElements = useMemo(() => {
     return elements.map((el) => ({
@@ -242,6 +248,31 @@ export default function GraphExplorer({
     setVisibleNodes(NODE_LIST_BATCH)
   }, [])
 
+  const startEdit = useCallback(() => {
+    if (!nodeDetail) return
+    setEditGist(nodeDetail.frontmatter.gist || '')
+    setEditConfidence(nodeDetail.frontmatter.confidence ?? 0.5)
+    setEditTags((nodeDetail.frontmatter.tags || []).join(', '))
+    setEditing(true)
+  }, [nodeDetail])
+
+  const saveEdit = useCallback(async () => {
+    if (!selectedNode) return
+    setSaving(true)
+    try {
+      const updated = await updateNode(selectedNode, {
+        gist: editGist,
+        confidence: editConfidence,
+        tags: editTags.split(',').map((t) => t.trim()).filter(Boolean),
+      })
+      setNodeDetail(updated)
+      setEditing(false)
+    } catch {
+    } finally {
+      setSaving(false)
+    }
+  }, [selectedNode, editGist, editConfidence, editTags])
+
   const handleZoom = useCallback((dir: 'in' | 'out' | 'fit') => {
     const cy = cyRef.current
     if (!cy) return
@@ -327,32 +358,83 @@ export default function GraphExplorer({
             </div>
             <div className="detail-path">{selectedNode}</div>
 
-            {nodeDetail.frontmatter.gist && (
-              <div className="detail-gist">{nodeDetail.frontmatter.gist}</div>
-            )}
-
-            <div className="detail-confidence">
-              <span className="detail-label" style={{ margin: 0 }}>Confidence</span>
-              <div className="confidence-bar">
-                <div
-                  className="confidence-fill"
-                  style={{ width: `${(nodeDetail.frontmatter.confidence ?? 0.5) * 100}%` }}
-                />
-              </div>
-              <span className="confidence-value">
-                {(nodeDetail.frontmatter.confidence ?? 0.5).toFixed(2)}
-              </span>
-            </div>
-
-            {nodeDetail.frontmatter.tags?.length > 0 && (
-              <div className="detail-section">
-                <div className="detail-label">Tags</div>
-                <div className="detail-tags">
-                  {nodeDetail.frontmatter.tags.map((tag: string) => (
-                    <span key={tag} className="detail-tag">{tag}</span>
-                  ))}
+            {editing ? (
+              <div className="detail-edit-form">
+                <div className="detail-edit-field">
+                  <label className="detail-edit-label">Gist</label>
+                  <textarea
+                    className="detail-edit-textarea"
+                    value={editGist}
+                    onChange={(e) => setEditGist(e.target.value)}
+                    rows={3}
+                  />
+                </div>
+                <div className="detail-edit-field">
+                  <label className="detail-edit-label">Confidence</label>
+                  <div className="detail-edit-slider">
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={editConfidence}
+                      onChange={(e) => setEditConfidence(parseFloat(e.target.value))}
+                    />
+                    <span className="detail-edit-conf-val">{editConfidence.toFixed(2)}</span>
+                  </div>
+                </div>
+                <div className="detail-edit-field">
+                  <label className="detail-edit-label">Tags (comma-separated)</label>
+                  <input
+                    type="text"
+                    className="detail-edit-input"
+                    value={editTags}
+                    onChange={(e) => setEditTags(e.target.value)}
+                  />
+                </div>
+                <div className="detail-edit-actions">
+                  <button className="detail-edit-save" onClick={saveEdit} disabled={saving}>
+                    {saving ? 'Saving...' : 'Save'}
+                  </button>
+                  <button className="detail-edit-cancel" onClick={() => setEditing(false)}>
+                    Cancel
+                  </button>
                 </div>
               </div>
+            ) : (
+              <>
+                {nodeDetail.frontmatter.gist && (
+                  <div className="detail-gist">{nodeDetail.frontmatter.gist}</div>
+                )}
+
+                <div className="detail-confidence">
+                  <span className="detail-label" style={{ margin: 0 }}>Confidence</span>
+                  <div className="confidence-bar">
+                    <div
+                      className="confidence-fill"
+                      style={{ width: `${(nodeDetail.frontmatter.confidence ?? 0.5) * 100}%` }}
+                    />
+                  </div>
+                  <span className="confidence-value">
+                    {(nodeDetail.frontmatter.confidence ?? 0.5).toFixed(2)}
+                  </span>
+                </div>
+
+                {nodeDetail.frontmatter.tags?.length > 0 && (
+                  <div className="detail-section">
+                    <div className="detail-label">Tags</div>
+                    <div className="detail-tags">
+                      {nodeDetail.frontmatter.tags.map((tag: string) => (
+                        <span key={tag} className="detail-tag">{tag}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <button className="detail-edit-toggle" onClick={startEdit}>
+                  Edit
+                </button>
+              </>
             )}
 
             {(edges.length > 0 || antiEdges.length > 0) && (

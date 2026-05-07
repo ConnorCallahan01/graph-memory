@@ -13,7 +13,7 @@ import { CONFIG, isGraphInitialized } from "../graph-memory/config.js";
 import { clearSessionContextState } from "../graph-memory/context-refresh.js";
 import { initializeGraph } from "../graph-memory/index.js";
 import { clearDirty } from "../graph-memory/dirty-state.js";
-import { readActiveProject, removeActiveProject } from "../graph-memory/project.js";
+import { detectProject, readActiveProject, removeActiveProject } from "../graph-memory/project.js";
 import { enqueueJob, hasActiveJob } from "../graph-memory/pipeline/job-queue.js";
 import { getAssistantTracePath, getConversationLogPath, getToolTracePath } from "../graph-memory/session-trace.js";
 
@@ -36,7 +36,10 @@ async function main() {
   } catch { /* ignore */ }
 
   initializeGraph();
-  const activeProject = readActiveProject(sessionId);
+  let activeProject = readActiveProject(sessionId);
+  if (!activeProject) {
+    activeProject = detectProject(process.cwd());
+  }
 
   // Flush any remaining buffer to snapshot and mark for scribe
   const resolvedSessionId = sessionId || `end_${Date.now()}`;

@@ -42,10 +42,19 @@ export interface NodeDetail {
   indexEntry?: Record<string, any>
 }
 
+export interface ActiveProjectInfo {
+  name: string
+  sessionCount: number
+  gitRoot?: string
+  cwd?: string
+  startedAt?: string
+}
+
 export interface PipelineStatus {
   graphRoot: string
   initialized: boolean
   activeProject: string
+  activeProjects: ActiveProjectInfo[]
   nodeCount: number
   archiveCount: number
   bufferCount: number
@@ -241,6 +250,19 @@ export interface StartupContext {
   allPinnedNodeCount: number
 }
 
+export interface MemoryHealth {
+  nodeCount: number
+  archiveCount: number
+  staleCount: number
+  orphanCount: number
+  categories: Record<string, number>
+  mapTokens: number
+  mapBudget: number
+  mapUsage: number
+  balanceDominant: { category: string; ratio: number } | null
+  score: number
+}
+
 export interface LatestBrief {
   date: string
   updatedAt: string | null
@@ -314,12 +336,6 @@ export async function fetchLogs(): Promise<WorkerLogSummary[]> {
 
 export async function fetchLogDetail(filename: string): Promise<WorkerLogDetail> {
   const res = await fetch(`/api/logs/${encodeURIComponent(filename)}`)
-  if (!res.ok) throw new Error(`API error: ${res.status}`)
-  return res.json()
-}
-
-export async function fetchStartupContext(): Promise<StartupContext> {
-  const res = await fetch('/api/startup-context')
   if (!res.ok) throw new Error(`API error: ${res.status}`)
   return res.json()
 }
@@ -446,6 +462,38 @@ export async function fetchSkills(): Promise<SkillforgeManifest[]> {
   const res = await fetch('/api/skills')
   if (!res.ok) return []
   return res.json()
+}
+
+export async function fetchStartupContext(): Promise<StartupContext> {
+  const res = await fetch('/api/startup-context')
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  return res.json()
+}
+
+export async function fetchHealth(): Promise<MemoryHealth> {
+  const res = await fetch('/api/health')
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  return res.json()
+}
+
+export async function updateNode(path: string, updates: { gist?: string; confidence?: number; tags?: string[] }): Promise<NodeDetail> {
+  const res = await fetch(`/api/node/${path}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  })
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+  return res.json()
+}
+
+export async function integrateDream(bucket: string, filename: string): Promise<void> {
+  const res = await fetch(`/api/dreams/${bucket}/${filename}/integrate`, { method: 'POST' })
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
+}
+
+export async function archiveDream(bucket: string, filename: string): Promise<void> {
+  const res = await fetch(`/api/dreams/${bucket}/${filename}/archive`, { method: 'POST' })
+  if (!res.ok) throw new Error(`API error: ${res.status}`)
 }
 
 export function subscribeToEvents(onEvent: (type: string) => void): () => void {

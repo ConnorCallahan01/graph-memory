@@ -1,13 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import {
   ActivityEvent,
   DeltaSummary,
   DreamsData,
+  MemoryHealth,
   PipelineJob,
   PipelineStatus,
   SessionTraceSummary,
   SkillforgeManifest,
   WorkerLogSummary,
+  archiveDream,
+  integrateDream,
 } from '../lib/api'
 
 function formatTime(ts: string): string {
@@ -46,6 +49,7 @@ interface Props {
   auditBrief: string | null
   dreams: DreamsData | null
   skills: SkillforgeManifest[]
+  health: MemoryHealth | null
 }
 
 export default function ActivityPanel({
@@ -59,6 +63,7 @@ export default function ActivityPanel({
   auditBrief,
   dreams,
   skills,
+  health,
 }: Props) {
   const [expandedJob, setExpandedJob] = useState<string | null>(null)
 
@@ -230,15 +235,63 @@ export default function ActivityPanel({
         </div>
       )}
 
+      {health && (
+        <div className="rail-section">
+          <div className="rail-heading">
+            Memory health
+            <span className={`rail-health-score ${health.score >= 75 ? 'good' : health.score >= 50 ? 'warn' : 'bad'}`}>
+              {health.score}
+            </span>
+          </div>
+          <div className="rail-health-grid">
+            <div className="rail-health-metric">
+              <span className="health-val">{health.nodeCount}</span>
+              <span className="health-label">nodes</span>
+            </div>
+            <div className="rail-health-metric">
+              <span className="health-val">{health.staleCount}</span>
+              <span className="health-label">stale</span>
+            </div>
+            <div className="rail-health-metric">
+              <span className="health-val">{health.orphanCount}</span>
+              <span className="health-label">orphans</span>
+            </div>
+            <div className="rail-health-metric">
+              <span className="health-val">{health.mapUsage}%</span>
+              <span className="health-label">MAP</span>
+            </div>
+          </div>
+          {health.balanceDominant && health.balanceDominant.ratio > 60 && (
+            <div className="rail-health-warn">
+              {health.balanceDominant.ratio}% {health.balanceDominant.category}
+            </div>
+          )}
+        </div>
+      )}
+
       {dreams && dreams.pending.length > 0 && (
         <div className="rail-section">
           <div className="rail-heading">
             Dreams
             <span className="rail-count">{dreams.pending.length}</span>
           </div>
-          {dreams.pending.slice(0, 2).map((d, i) => (
+          {dreams.pending.slice(0, 3).map((d, i) => (
             <div key={i} className="rail-dream">
-              {d.fragment || d.content?.slice(0, 100) || d.filename}
+              <div className="rail-dream-text">{d.fragment || d.content?.slice(0, 100) || d.filename}</div>
+              <div className="rail-dream-actions">
+                <button
+                  className="rail-dream-btn accept"
+                  onClick={(e) => { e.stopPropagation(); integrateDream(d.bucket, d.filename).catch(() => {}) }}
+                >
+                  Accept
+                </button>
+                <button
+                  className="rail-dream-btn reject"
+                  onClick={(e) => { e.stopPropagation(); archiveDream(d.bucket, d.filename).catch(() => {}) }}
+                >
+                  Skip
+                </button>
+              </div>
             </div>
           ))}
         </div>

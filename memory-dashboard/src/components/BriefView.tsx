@@ -5,7 +5,7 @@ interface Props {
   brief: LatestBrief | null
   projectFilter: string | null
   status: PipelineStatus | null
-  onNavigate: (view: 'brief' | 'graph') => void
+  onNavigate: (view: 'brief' | 'graph' | 'context' | 'sessions') => void
   workingFiles: ProjectWorkingFile[]
 }
 

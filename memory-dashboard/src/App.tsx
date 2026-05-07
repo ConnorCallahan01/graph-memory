@@ -8,6 +8,7 @@ import {
   GraphElement,
   GraphNode,
   LatestBrief,
+  MemoryHealth,
   PipelineJob,
   PipelineStatus,
   ProjectWorkingFile,
@@ -21,6 +22,7 @@ import {
   fetchDeltas,
   fetchDreams,
   fetchGraph,
+  fetchHealth,
   fetchLatestBrief,
   fetchLogs,
   fetchPipeline,
@@ -33,8 +35,10 @@ import {
 import BriefView from './components/BriefView'
 import GraphExplorer from './components/GraphExplorer'
 import ActivityPanel from './components/ActivityPanel'
+import ContextView from './components/ContextView'
+import SessionReplay from './components/SessionReplay'
 
-type ViewTab = 'brief' | 'graph'
+type ViewTab = 'brief' | 'graph' | 'context' | 'sessions'
 
 function deriveProjects(
   nodes: GraphNode[],
@@ -95,6 +99,7 @@ export default function App() {
   const [projectWorkingFiles, setProjectWorkingFiles] = useState<ProjectWorkingFile[]>([])
   const [auditData, setAuditData] = useState<AuditData>({ brief: null, report: null })
   const [skills, setSkills] = useState<SkillforgeManifest[]>([])
+  const [health, setHealth] = useState<MemoryHealth | null>(null)
   const [selectedNode, setSelectedNode] = useState<string | null>(null)
   const [detailVersion, setDetailVersion] = useState(0)
   const shellRef = useRef<HTMLDivElement>(null)
@@ -158,6 +163,10 @@ export default function App() {
     try { setSkills(await fetchSkills()) } catch {}
   }, [])
 
+  const loadHealth = useCallback(async () => {
+    try { setHealth(await fetchHealth()) } catch {}
+  }, [])
+
   useEffect(() => {
     loadGraph()
     loadBrief()
@@ -167,7 +176,8 @@ export default function App() {
     loadChanges()
     loadPipeline()
     loadSkills()
-  }, [loadGraph, loadBrief, loadStatus, loadWorkingFiles, loadActivity, loadChanges, loadPipeline, loadSkills])
+    loadHealth()
+  }, [loadGraph, loadBrief, loadStatus, loadWorkingFiles, loadActivity, loadChanges, loadPipeline, loadSkills, loadHealth])
 
   useEffect(() => {
     setProjects(deriveProjects(nodes, projectWorkingFiles, brief))
@@ -179,8 +189,7 @@ export default function App() {
       if (type === 'status') { loadStatus(); loadBrief(); loadSkills() }
       if (type === 'activity') loadActivity()
       if (type === 'deltas') loadChanges()
-      if (type === 'pipeline' || type === 'logs') loadPipeline()
-      if (type === 'pipeline' || type === 'logs') loadSkills()
+      if (type === 'pipeline' || type === 'logs') { loadPipeline(); loadHealth() }
       if (type === 'node' && selectedNodeRef.current) {
         setDetailVersion((v) => v + 1)
       }
@@ -188,7 +197,7 @@ export default function App() {
     return unsub
   }, [loadGraph, loadBrief, loadStatus, loadWorkingFiles, loadActivity, loadChanges, loadPipeline])
 
-  const health = getHealthStatus(status)
+  const pipelineHealth = getHealthStatus(status)
 
   const filteredNodes = projectFilter
     ? nodes.filter((n) => n.data.project === projectFilter || !n.data.project)
@@ -212,6 +221,8 @@ export default function App() {
           {([
             ['brief', 'Brief'],
             ['graph', 'Graph'],
+            ['context', 'Context'],
+            ['sessions', 'Sessions'],
           ] as const).map(([key, label]) => (
             <button
               key={key}
@@ -223,10 +234,17 @@ export default function App() {
           ))}
         </nav>
         <div className="topbar-right">
-          <span className={`status-dot ${health.level}${status?.runningJobs ? ' pulse' : ''}`} />
-          <span className="status-label">{health.label}</span>
+          <span className={`status-dot ${pipelineHealth.level}${status?.runningJobs ? ' pulse' : ''}`} />
+          <span className="status-label">{pipelineHealth.label}</span>
           {status && (
-            <span className="status-metric">{status.nodeCount} nodes</span>
+            <>
+              <span className="status-metric">{status.nodeCount} nodes</span>
+              {status.activeProjects.length > 1 && (
+                <span className="status-metric status-metric-accent">
+                  {status.activeProjects.length} active
+                </span>
+              )}
+            </>
           )}
         </div>
       </header>
@@ -252,13 +270,13 @@ export default function App() {
       )}
 
       <main className="main">
-        <div className={`content-area${view === 'graph' ? ' graph-mode' : ''}`}>
+        <div className={`content-area${view === 'graph' || view === 'sessions' ? ' graph-mode' : ''}`}>
           {view === 'brief' && (
             <BriefView
               brief={brief}
               projectFilter={projectFilter}
               status={status}
-              onNavigate={setView}
+              onNavigate={(v) => setView(v)}
               workingFiles={projectWorkingFiles}
             />
           )}
@@ -273,6 +291,8 @@ export default function App() {
               onNavigate={setSelectedNode}
             />
           )}
+          {view === 'context' && <ContextView activeProjects={status?.activeProjects ?? []} />}
+          {view === 'sessions' && <SessionReplay traces={sessionTraces} />}
         </div>
 
         <ActivityPanel
@@ -286,6 +306,7 @@ export default function App() {
           auditBrief={auditData.brief}
           dreams={dreams}
           skills={skills}
+          health={health}
         />
       </main>
     </div>

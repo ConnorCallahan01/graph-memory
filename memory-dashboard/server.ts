@@ -450,6 +450,35 @@ function readActiveProject(graphRoot = getGraphRoot()): { name: string; gitRoot?
   return active ? { name: active.name, gitRoot: active.gitRoot } : (trace ? { name: trace.name } : null)
 }
 
+function listAllActiveProjects(graphRoot = getGraphRoot()): Array<{ name: string; sessionCount: number; gitRoot?: string; cwd?: string; startedAt?: string }> {
+  const activeProjectsDir = getPaths(graphRoot).activeProjects
+  if (!existsSync(activeProjectsDir)) return []
+
+  const projectMap = new Map<string, { name: string; sessionCount: number; gitRoot?: string; cwd?: string; startedAt?: string }>()
+
+  for (const file of readdirSync(activeProjectsDir).filter((f) => f.endsWith('.json'))) {
+    const entry = safeJsonParse(join(activeProjectsDir, file))
+    if (!entry?.name) continue
+    const existing = projectMap.get(entry.name)
+    if (existing) {
+      existing.sessionCount++
+      if (entry.startedAt && (!existing.startedAt || entry.startedAt > existing.startedAt)) {
+        existing.startedAt = entry.startedAt
+      }
+    } else {
+      projectMap.set(entry.name, {
+        name: entry.name,
+        sessionCount: 1,
+        gitRoot: entry.gitRoot,
+        cwd: entry.cwd,
+        startedAt: entry.startedAt,
+      })
+    }
+  }
+
+  return Array.from(projectMap.values()).sort((a, b) => a.name.localeCompare(b.name))
+}
+
 function readJobs(state: JobState, graphRoot = getGraphRoot()): JobRecord[] {
   const dir = getPaths(graphRoot).jobs[state]
   if (!existsSync(dir)) return []
@@ -1174,6 +1203,32 @@ app.get('/api/node/:path(*)', (req, res) => {
   }
 })
 
+app.put('/api/node/:path(*)', (req, res) => {
+  try {
+    const graphRoot = getGraphRoot()
+    const { nodes } = getPaths(graphRoot)
+    const fullPath = resolve(nodes, req.params.path.endsWith('.md') ? req.params.path : `${req.params.path}.md`)
+    if (!fullPath.startsWith(nodes)) return res.status(400).json({ error: 'Invalid path' })
+    if (!existsSync(fullPath)) return res.status(404).json({ error: 'Node not found' })
+
+    const raw = readFileSync(fullPath, 'utf-8')
+    const { data: fm, content: body } = matter(raw)
+
+    if (req.body.gist !== undefined) fm.gist = req.body.gist
+    if (req.body.confidence !== undefined) fm.confidence = req.body.confidence
+    if (req.body.tags !== undefined) fm.tags = req.body.tags
+
+    const updated = matter.stringify(body, fm)
+    writeFileSync(fullPath, updated)
+
+    const node = readNodeFileForGraph(graphRoot, req.params.path)
+    res.json(node)
+  } catch (err) {
+    console.error('Error in PUT /api/node:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
 app.get('/api/status', (_req, res) => {
   try {
     const graphRoot = getGraphRoot()
@@ -1186,6 +1241,7 @@ app.get('/api/status', (_req, res) => {
       graphRoot,
       initialized: existsSync(getPaths(graphRoot).map),
       activeProject: activeProject?.name ?? 'global',
+      activeProjects: listAllActiveProjects(graphRoot),
       nodeCount,
       archiveCount: countMarkdownFiles(getPaths(graphRoot).archive),
       bufferCount: readBufferCount(graphRoot),
@@ -1203,6 +1259,75 @@ app.get('/api/status', (_req, res) => {
     })
   } catch (err) {
     console.error('Error in /api/status:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+app.get('/api/health', (_req, res) => {
+  try {
+    const graphRoot = getGraphRoot()
+    const paths = getPaths(graphRoot)
+    const nodeCount = countMarkdownFiles(paths.nodes)
+    const archiveCount = countMarkdownFiles(paths.archive)
+
+    const index = readIndex()
+    const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
+    const categories: Record<string, number> = {}
+    let staleCount = 0
+    let orphanCount = 0
+    const edgeSources = new Set<string>()
+    const edgeTargets = new Set<string>()
+
+    const graphData = readGraphForDashboard(graphRoot)
+    for (const el of graphData.elements) {
+      if (el.group === 'edges') {
+        edgeSources.add(el.data.source)
+        edgeTargets.add(el.data.target)
+      }
+    }
+    const allConnected = new Set([...edgeSources, ...edgeTargets])
+
+    for (const entry of index) {
+      const cat = entry.category || 'uncategorized'
+      categories[cat] = (categories[cat] || 0) + 1
+
+      const lastAccessed = entry.last_accessed ? Date.parse(entry.last_accessed) : 0
+      if (lastAccessed > 0 && lastAccessed < thirtyDaysAgo) staleCount++
+
+      if (!allConnected.has(entry.path)) orphanCount++
+    }
+
+    let mapTokens = 0
+    if (existsSync(paths.map)) {
+      mapTokens = Math.ceil(readFileSync(paths.map, 'utf-8').length / 4)
+    }
+    const mapBudget = 12000
+    const mapUsage = mapTokens / mapBudget
+
+    const topCategory = Object.entries(categories).sort((a, b) => b[1] - a[1])[0]
+    const balanceRatio = topCategory ? topCategory[1] / Math.max(nodeCount, 1) : 0
+
+    const score = Math.round(
+      (nodeCount > 0 ? Math.min(nodeCount / 50, 1) * 25 : 0) +
+      (staleCount === 0 ? 25 : Math.max(0, 25 - (staleCount / nodeCount) * 50)) +
+      (orphanCount === 0 ? 25 : Math.max(0, 25 - (orphanCount / nodeCount) * 50)) +
+      (mapUsage < 0.8 ? 25 : Math.max(0, 25 - (mapUsage - 0.8) * 100))
+    )
+
+    res.json({
+      nodeCount,
+      archiveCount,
+      staleCount,
+      orphanCount,
+      categories,
+      mapTokens,
+      mapBudget,
+      mapUsage: Math.round(mapUsage * 100),
+      balanceDominant: topCategory ? { category: topCategory[0], ratio: Math.round(balanceRatio * 100) } : null,
+      score: Math.min(score, 100),
+    })
+  } catch (err) {
+    console.error('Error in /api/health:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1360,6 +1485,50 @@ app.get('/api/dreams', (_req, res) => {
 
     res.json(result)
   } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+app.post('/api/dreams/:bucket/:filename/integrate', (req, res) => {
+  try {
+    const dreamsDir = getPaths().dreams
+    const srcDir = join(dreamsDir, req.params.bucket)
+    const srcPath = resolve(srcDir, req.params.filename)
+    if (!srcPath.startsWith(resolve(dreamsDir))) return res.status(403).json({ error: 'Forbidden' })
+    if (!existsSync(srcPath)) return res.status(404).json({ error: 'Not found' })
+
+    const destDir = join(dreamsDir, 'integrated')
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
+    const destPath = join(destDir, req.params.filename)
+
+    if (resolve(srcPath) !== resolve(destPath)) {
+      renameSync(srcPath, destPath)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error integrating dream:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+app.post('/api/dreams/:bucket/:filename/archive', (req, res) => {
+  try {
+    const dreamsDir = getPaths().dreams
+    const srcDir = join(dreamsDir, req.params.bucket)
+    const srcPath = resolve(srcDir, req.params.filename)
+    if (!srcPath.startsWith(resolve(dreamsDir))) return res.status(403).json({ error: 'Forbidden' })
+    if (!existsSync(srcPath)) return res.status(404).json({ error: 'Not found' })
+
+    const destDir = join(dreamsDir, 'archived')
+    if (!existsSync(destDir)) mkdirSync(destDir, { recursive: true })
+    const destPath = join(destDir, req.params.filename)
+
+    if (resolve(srcPath) !== resolve(destPath)) {
+      renameSync(srcPath, destPath)
+    }
+    res.json({ ok: true })
+  } catch (err) {
+    console.error('Error archiving dream:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
