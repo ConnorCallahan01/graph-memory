@@ -27,6 +27,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`conversationLog` path removed** — replaced by per-session buffer files; `CONFIG.paths.conversationLog` is no longer used.
 - **Symlink-safe dist resolution** — the OpenCode plugin resolves its `dist/` directory through `fs.realpathSync` to handle symlinked installs correctly.
 
+### Fixed
+
+- **Skillforge infinite creation/refresh loop** — `skillforged_at` was written to node frontmatter but never synced to the index, so the cooldown check always passed. Content hashing included volatile tracking fields (`access_count`, `last_accessed`), causing every access update to trigger a refresh. The scorer also didn't check for existing manifests. All three root causes fixed; daemon now writes authoritative post-refresh hash to manifests.
+- **Stale job recovery** — `requeueStaleRunningJobs` now runs every daemon tick (30-minute threshold) instead of only at startup, preventing zombie workers from blocking the pipeline indefinitely.
+- **Skillforge scoring data gap** — `sessionId` is now threaded through access tracking (plugin → tool → `updateLastAccessed`) so `distinct_sessions` and `recall_action_count` are populated correctly instead of always being zero.
+
 ## [2.2.0] — 2026-05-06
 
 ### Added

@@ -56,6 +56,7 @@ export async function handleGraphMemory(args: {
   pinned?: boolean;
   depth?: number;
   project?: string;
+  sessionId?: string;
   runtimeMode?: string;
   containerName?: string;
   imageName?: string;
@@ -69,11 +70,11 @@ export async function handleGraphMemory(args: {
 
   switch (action) {
     case "read_node":
-      return readNode(args.path);
+      return readNode(args.path, args.sessionId);
     case "search":
       return searchGraph(args.query);
     case "recall":
-      return recallGraph(args.query, args.depth);
+      return recallGraph(args.query, args.depth, args.sessionId);
     case "list_edges":
       return listEdges(args.path);
     case "read_dream":
@@ -289,7 +290,7 @@ function updateIndexEntry(nodePath: string, fm: any) {
 
 // --- recall action ---
 
-function recallGraph(query?: string, depth?: number): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
+function recallGraph(query?: string, depth?: number, sessionId?: string): { content: Array<{ type: "text"; text: string }>; isError?: boolean } {
   if (!query) {
     return { content: [{ type: "text", text: "Error: query required for recall" }], isError: true };
   }
@@ -389,7 +390,7 @@ function recallGraph(query?: string, depth?: number): { content: Array<{ type: "
   const connectedNodes = allConnected.slice(0, 10);
 
   for (const r of results) {
-    updateLastAccessed(r.path, { actionType: "recall" });
+    updateLastAccessed(r.path, { actionType: "recall", sessionId });
   }
 
   // Format output
@@ -552,7 +553,7 @@ async function runConsolidation(): Promise<{ content: Array<{ type: "text"; text
 
 // --- Existing actions ---
 
-function readNode(nodePath?: string) {
+function readNode(nodePath?: string, sessionId?: string) {
   if (!nodePath) {
     return { content: [{ type: "text" as const, text: "Error: path required for read_node" }], isError: true };
   }
@@ -572,7 +573,7 @@ function readNode(nodePath?: string) {
   }
 
   let content = fs.readFileSync(fullPath, "utf-8");
-  updateLastAccessed(nodePath, { actionType: "read" });
+  updateLastAccessed(nodePath, { actionType: "read", sessionId });
 
   // Surface dream connections if present
   try {
@@ -599,7 +600,7 @@ function readNode(nodePath?: string) {
   return { content: [{ type: "text" as const, text: content }] };
 }
 
-function updateLastAccessed(nodePath: string, options?: { actionType?: "read" | "recall"; sessionId?: string }) {
+export function updateLastAccessed(nodePath: string, options?: { actionType?: "read" | "recall"; sessionId?: string }) {
   const now = new Date().toISOString();
   const actionType = options?.actionType || "read";
   const sessionId = options?.sessionId;
@@ -1010,6 +1011,8 @@ export const graphMemorySchema = {
     .describe("Storage path for initialize action (defaults to ~/.graph-memory/)"),
   project: z.string().optional()
     .describe("Project scope for remember action (e.g. 'owner/repo'). Only set for project-specific knowledge, omit for global."),
+  sessionId: z.string().optional()
+    .describe("Session ID for access tracking (supplied by plugin, not user)"),
   pinned: z.boolean().optional()
     .describe("Pin node to prevent decay and auto-load at session start for matching projects"),
   workerProvider: z.enum(["codex", "claude", "pi", "opencode"]).optional()

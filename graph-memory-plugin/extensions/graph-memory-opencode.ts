@@ -25,14 +25,21 @@ let _overlap: any;
 let _recencyBoost: any;
 let _somaBoost: any;
 let _projectBoost: any;
+let _updateLastAccessed: any;
 
 async function loadCore() {
   if (_handleGraphMemory) return;
   const rawDir = import.meta.dirname ?? path.dirname(new URL(import.meta.url).pathname);
-  const realDir = fs.realpathSync(rawDir);
+  let realDir = rawDir;
+  try {
+    const rawFile = new URL(import.meta.url).pathname;
+    realDir = path.dirname(fs.realpathSync(rawFile));
+  } catch {}
+  const home = process.env.HOME || process.env.USERPROFILE || "/tmp";
   const candidates = [
     path.resolve(realDir, "..", "dist", "graph-memory"),
     path.resolve(rawDir, "..", "dist", "graph-memory"),
+    path.join(home, "Desktop", "agent_memory", "graph-memory-plugin", "dist", "graph-memory"),
   ];
   const distDir = candidates.find((d) => fs.existsSync(path.join(d, "tools.js"))) || candidates[0];
   const tools = await import(path.join(distDir, "tools.js"));
@@ -50,6 +57,7 @@ async function loadCore() {
   _recencyBoost = scoring.recencyBoost;
   _somaBoost = soma.somaBoost;
   _projectBoost = scoring.projectBoost;
+  _updateLastAccessed = tools.updateLastAccessed;
 }
 
 export const GraphMemoryPlugin: Plugin = async ({ project, client, directory, worktree }) => {
@@ -215,6 +223,12 @@ export const GraphMemoryPlugin: Plugin = async ({ project, client, directory, wo
 
     if (scored.length === 0) return null;
 
+    if (_updateLastAccessed && captureSessionId) {
+      for (const r of scored) {
+        try { _updateLastAccessed(r.path, { actionType: "recall", sessionId: captureSessionId }); } catch {}
+      }
+    }
+
     const lines = scored.map(
       (r: any) =>
         `- **${r.path}** (${r.relevance.toFixed(2)}): ${(r.gist || "").slice(0, 150)}`
@@ -346,6 +360,9 @@ SETUP:
           await ensureGraph();
           if (!graphReady) {
             return "Graph memory is not initialized. Run graph_memory with action='initialize' first, or set GRAPH_MEMORY_ROOT env var.";
+          }
+          if (activeSessionId) {
+            args.sessionId = activeSessionId;
           }
           return _handleGraphMemory(args);
         },

@@ -828,6 +828,16 @@ async function runSkillforge(job: GraphMemoryJob): Promise<void> {
     nodePath: payload.nodePath,
     project: payload.project,
   });
+
+  try {
+    const indexPath = CONFIG.paths.index;
+    const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
+    const entry = index.find((e: any) => e.path === payload.nodePath);
+    if (entry) {
+      entry.skillforged_at = new Date().toISOString();
+      fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    }
+  } catch { /* non-critical */ }
 }
 
 async function runSkillforgeRefresh(job: GraphMemoryJob): Promise<void> {
@@ -861,6 +871,16 @@ async function runSkillforgeRefresh(job: GraphMemoryJob): Promise<void> {
     nodePath: payload.nodePath,
     skillName: payload.skillName,
   });
+
+  const authoritativeHash = computeNodeContentHash(payload.nodePath);
+  if (authoritativeHash && fs.existsSync(payload.manifestPath)) {
+    try {
+      const mf = JSON.parse(fs.readFileSync(payload.manifestPath, "utf-8"));
+      mf.content_hash = authoritativeHash;
+      mf.last_refreshed_at = new Date().toISOString();
+      fs.writeFileSync(payload.manifestPath, JSON.stringify(mf, null, 2));
+    } catch { /* non-critical */ }
+  }
 }
 
 function maybeEnqueueSkillforgeJobs(): void {
@@ -1034,6 +1054,7 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
       maybeEnqueueSkillforgeJobs();
       maybeEnqueueSkillforgeRefresh();
       scavengeStaleBuffers();
+      requeueStaleRunningJobs(30 * 60_000);
 
       writeDaemonState({
         running: true,
