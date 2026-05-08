@@ -11,18 +11,18 @@
   "dependencies": {
     "chokidar": "^4.0.3",
     "cors": "^2.8.5",
-    "cytoscape": "^3.31.0",
+    "cytoscape": "^3.33.3",
     "cytoscape-cise": "^2.0.1",
     "cytoscape-fcose": "^2.2.0",
     "express": "^4.21.2",
     "gray-matter": "^4.0.3",
-    "react": "^19.2.5",
+    "react": "^19.2.6",
     "react-cytoscapejs": "^2.0.0",
-    "react-dom": "^19.2.5"
+    "react-dom": "^19.2.6"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
-    "@types/cytoscape": "^3.21.8",
+    "@types/cytoscape": "^3.31.0",
     "@types/express": "^5.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
