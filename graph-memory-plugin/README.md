@@ -126,7 +126,7 @@ Key config (`CONFIG.skillforge`):
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `enabled` | `true` | Enable/disable skillforge scoring and job enqueueing |
-| `scoreThreshold` | `0.65` | Minimum score to become a skillforge candidate |
+| `scoreThreshold` | `0.55` | Minimum score to become a skillforge candidate |
 | `cooldownDays` | `14` | Days before a skillforged node can be re-scored |
 | `maxSkillsPerProject` | `15` | Cap on skills per project |
 | `maxJobsPerTick` | `2` | Max skillforge jobs enqueued per daemon tick |

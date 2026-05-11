@@ -35,6 +35,8 @@ export type ActivityEventType =
   | "graph:working_generated"
   | "graph:dreams_generated"
   | "graph:priors_updated"
+  | "graph:priors_truncated"
+  | "graph:priors_capped"
   | "git:commit"
   | "git:push"
   | "git:error"
@@ -46,6 +48,7 @@ export type ActivityEventType =
   | "graph:node_compacted"
   | "graph:dream_linked"
   | "graph:dream_capped"
+  | "graph:dream_reinforced"
   | "graph:archive_index_rebuilt"
   | "graph:node_resurfaced"
   | "skillforge:scored"
@@ -57,7 +60,8 @@ export type ActivityEventType =
   | "skillforge:refresh_error"
   | "system:init"
   | "system:info"
-  | "system:error";
+  | "system:error"
+  | "daemon:decay";
 
 export interface ActivityEvent {
   type: ActivityEventType;

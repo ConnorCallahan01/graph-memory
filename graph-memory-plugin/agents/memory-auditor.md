@@ -67,6 +67,8 @@ Do not rewrite existing files already under `{graphRoot}/archive/`. Archive is c
 #### D. Apply Time-Based Confidence Decay
 For nodes that haven't been updated in the last 30 days and have `decay_rate` set, reduce confidence by `decay_rate`. Don't decay below 0.1.
 
+**For nodes WITHOUT `decay_rate` set:** Add `decay_rate: 0.05` to their frontmatter. Every node should decay — knowledge that isn't reinforced should slowly fade. This is a mechanical fix, not a judgment call.
+
 #### E. Clean Stale Locks
 Check for stale marker files older than 1 hour and remove them:
 - `.scribe-pending` (>1 hour)
@@ -104,6 +106,19 @@ Review recent deltas for behavioral patterns that might warrant PRIORS refinemen
 - Repeated decision patterns across sessions
 - New working style observations
 - Contradictions with existing PRIORS entries
+
+**Quality gate before recommending a PRIORS addition:**
+- The pattern must appear across 2+ sessions AND 2+ projects (or be genuinely cross-cutting like "the user always does X")
+- It must be a cognitive principle (how to think), not an operational instruction (what to do)
+- It must be expressible in under 30 words
+- If it only applies to one project, tool, or framework → recommend it as a graph node instead, with a note: "Too specific for PRIORS — belongs in a graph node"
+
+For each recommendation, classify:
+- `type: "add"` — genuinely new cross-project cognitive principle
+- `type: "refine"` — new evidence that sharpens an existing PRIORS entry
+- `type: "remove"` — contradicted by recent behavior
+- `type: "demote_to_node"` — an existing PRIORS entry that is too project-specific or operational → should become a graph node
+- `type: "compress"` — an existing PRIORS entry over 60 words that needs compression (note the entry and suggest a compressed version)
 
 #### F. Pinned Procedure Candidates
 Identify nodes that may deserve `pinned: true` so they are injected as durable procedural memory at session start.
@@ -158,7 +173,7 @@ Write two files:
     "gist_drift": [{"path": "...", "current_gist": "...", "suggested_gist": "..."}],
     "content_balance": {"architecture": 0, "patterns": 0, "concepts": 0, "decisions": 0},
     "soma_shifts": [{"path": "...", "description": "..."}],
-    "priors_candidates": [{"type": "refine|add|remove", "detail": "..."}],
+    "priors_candidates": [{"type": "refine|add|remove|demote_to_node|compress", "entry": "current text or proposed text", "detail": "...", "suggested": "compressed version for compress type"}],
     "pin_candidates": [{"path": "...", "scope": "global|project", "reasoning": "...", "evidence": ["...", "..."]}],
     "working_assessment": {"active_topics": [], "recent_decisions": [], "open_questions": []}
   },

@@ -107,7 +107,9 @@ export function updatePriors(newPriors: string[], decayedPriors: string[]) {
   }
 
   while (priorLines.length > CONFIG.graph.maxPriors) {
-    priorLines.shift();
+    const scored = priorLines.map((line, idx) => ({ idx, score: scorePriorLine(line) }));
+    scored.sort((a, b) => a.score - b.score);
+    priorLines.splice(scored[0].idx, 1);
   }
 
   const rebuiltLines = [...headerLines];
@@ -115,9 +117,21 @@ export function updatePriors(newPriors: string[], decayedPriors: string[]) {
     rebuiltLines.push(`${i + 1}. ${priorLines[i]}`);
   }
 
-  fs.writeFileSync(CONFIG.paths.priors, rebuiltLines.join("\n"));
+  let output = rebuiltLines.join("\n");
+  const MAX_PRIORS_TOKENS = CONFIG.graph.maxPriorsTokens || 1500;
+  const priorTokens = estimateTokens(output);
+  if (priorTokens > MAX_PRIORS_TOKENS) {
+    const kept = truncatePriorsToBudget(priorLines, headerLines, MAX_PRIORS_TOKENS);
+    rebuiltLines.length = 0;
+    for (let i = 0; i < headerLines.length; i++) rebuiltLines.push(headerLines[i]);
+    for (let i = 0; i < kept.length; i++) rebuiltLines.push(`${i + 1}. ${kept[i]}`);
+    output = rebuiltLines.join("\n");
+    activityBus.log("graph:priors_truncated", `PRIORS truncated from ${priorTokens} to ${estimateTokens(output)} tokens (cap: ${MAX_PRIORS_TOKENS})`);
+  }
 
-  activityBus.log("graph:priors_updated", `Priors updated: +${newPriors.length}, -${decayedPriors.length}, total: ${priorLines.length}/${CONFIG.graph.maxPriors}`);
+  fs.writeFileSync(CONFIG.paths.priors, output);
+
+  activityBus.log("graph:priors_updated", `Priors updated: +${newPriors.length}, -${decayedPriors.length}, total: ${priorLines.length}/${CONFIG.graph.maxPriors} (${estimateTokens(output)} tokens)`);
 }
 
 // --- MAP regeneration (with depth filtering + dream summary) ---
@@ -696,6 +710,86 @@ export function generateDREAMS() {
   activityBus.log("graph:dreams_generated", `DREAMS.md rebuilt: ${dreams.length} fragments`);
 }
 
+function scorePriorLine(line: string): number {
+  let score = 50;
+  const stripped = line.replace(/\*\*/g, "").trim();
+
+  if (stripped.length < 80) score += 30;
+  else if (stripped.length < 150) score += 15;
+  else if (stripped.length > 300) score -= 20;
+  if (stripped.length > 500) score -= 15;
+
+  const genericPatterns = [
+    /^(always|never|prefer|avoid|before|when|if|treat|follow|use)\s/i,
+    /\b(simple|clear|concise|explicit|consistent|reliable|first|before)\b/i,
+  ];
+  for (const p of genericPatterns) {
+    if (p.test(stripped)) score += 10;
+  }
+
+  const specificPatterns = [
+    /\b(ssh|droplet|ip address|env var|\.env|localhost|port \d+)\b/i,
+    /\b(next\.js|react|express|docker|vercel|railway)\b/i,
+    /\b(firecrawl|clerk|prisma)\b/i,
+    /[a-z_]+-[a-z0-9]+-[a-z0-9]+-[a-f0-9]+/,
+    /\b(debugging|troubleshooting|runbook|operational)\b/i,
+    /\b(keel3|agent_memory|graph-memory)\b/i,
+  ];
+  for (const p of specificPatterns) {
+    if (p.test(stripped)) score -= 8;
+  }
+
+  return score;
+}
+
+function truncatePriorsToBudget(priorLines: string[], headerLines: string[], budget: number): string[] {
+  if (priorLines.length === 0) return [];
+
+  const scored = priorLines.map((line, idx) => ({ line, idx, score: scorePriorLine(line) }));
+  scored.sort((a, b) => b.score - a.score);
+
+  const kept = new Map<number, string>();
+  let totalTokens = estimateTokens(headerLines.join("\n"));
+  for (const item of scored) {
+    const entry = `${kept.size + 1}. ${item.line}`;
+    const tokens = estimateTokens(entry);
+    if (totalTokens + tokens > budget) continue;
+    kept.set(item.idx, item.line);
+    totalTokens += tokens;
+  }
+
+  const result: string[] = [];
+  for (let i = 0; i < priorLines.length; i++) {
+    if (kept.has(i)) result.push(kept.get(i)!);
+  }
+  return result;
+}
+
+export function enforcePriorsCap(): void {
+  if (!fs.existsSync(CONFIG.paths.priors)) return;
+  const content = fs.readFileSync(CONFIG.paths.priors, "utf-8");
+  const MAX_PRIORS_TOKENS = CONFIG.graph.maxPriorsTokens || 1500;
+  const tokens = estimateTokens(content);
+  if (tokens <= MAX_PRIORS_TOKENS) return;
+
+  const lines = content.split("\n");
+  const headerEnd = lines.findIndex(l => /^\d+\./.test(l));
+  if (headerEnd === -1) return;
+
+  const header = lines.slice(0, headerEnd);
+  const priorLines: string[] = [];
+  for (const line of lines.slice(headerEnd)) {
+    const m = line.match(/^\d+\.\s*(.*)/);
+    if (m) priorLines.push(m[1]);
+    else if (line.trim()) priorLines.push(line);
+  }
+
+  const kept = truncatePriorsToBudget(priorLines, header, MAX_PRIORS_TOKENS);
+  const output = [...header, ...kept.map((p, i) => `${i + 1}. ${p}`)].join("\n");
+  fs.writeFileSync(CONFIG.paths.priors, output);
+  activityBus.log("graph:priors_capped", `PRIORS hard-capped from ${tokens} to ${estimateTokens(output)} tokens (kept ${kept.length}/${priorLines.length} entries by score)`);
+}
+
 export function regenerateCoreContextFiles(currentProject?: string) {
   fullRegenerateMAP(currentProject);
   rebuildIndex();
@@ -706,6 +800,7 @@ export function regenerateCoreContextFiles(currentProject?: string) {
   } else {
     generateWORKING();
   }
+  enforcePriorsCap();
 }
 
 export function regenerateDreamContext() {

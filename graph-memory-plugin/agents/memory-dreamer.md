@@ -94,7 +94,7 @@ Name files: `dream_{timestamp}_{random4chars}.json`
 
 ### 7. Handle Promotions
 
-For dreams reaching confidence >= 0.5 after reinforcement across 3+ sessions:
+For dreams reaching confidence >= 0.4 after reinforcement across 2+ sessions:
 1. Create a real node under the first referenced node's category (or a new appropriate category)
 2. Move the dream file from `pending/` to `integrated/`
 3. Add `dream_refs` to referenced nodes' frontmatter
@@ -105,11 +105,12 @@ For dreams reaching confidence >= 0.5 after reinforcement across 3+ sessions:
 For pending dreams affected by new evidence:
 - Read the dream file
 - Update the `confidence` field
+- **Implicit reinforcement**: if a node referenced by a pending dream was recalled, updated, or received a confidence boost in recent deltas, boost the dream's confidence by +0.05. The dream is connected to active thinking, which is a form of subconscious reinforcement.
 - If confidence drops below 0.1, archive it to `dreams/archived/`
 
 ### 9. Enforce Hard Cap
 
-Maximum 20 pending dreams. If over the limit:
+Maximum 15 pending dreams. If over the limit:
 1. Sort pending dreams by confidence (lowest first)
 2. Archive lowest-confidence dreams to `dreams/archived/`
 3. Remove `dream_refs` from their referenced nodes

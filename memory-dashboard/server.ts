@@ -1345,14 +1345,82 @@ app.get('/api/health', (_req, res) => {
     const mapBudget = 12000
     const mapUsage = mapTokens / mapBudget
 
+    let priorsTokens = 0
+    if (existsSync(paths.priors)) {
+      priorsTokens = Math.ceil(readFileSync(paths.priors, 'utf-8').length / 4)
+    }
+
+    let somaTokens = 0
+    if (existsSync(paths.soma)) {
+      somaTokens = Math.ceil(readFileSync(paths.soma, 'utf-8').length / 4)
+    }
+
+    let dreamsTokens = 0
+    if (existsSync(paths.dreamsContext)) {
+      dreamsTokens = Math.ceil(readFileSync(paths.dreamsContext, 'utf-8').length / 4)
+    }
+
+    let workingTokens = 0
+    const workingDir = join(graphRoot, 'working')
+    if (existsSync(workingDir)) {
+      for (const f of readdirSync(workingDir)) {
+        if (f.endsWith('.md')) {
+          workingTokens += Math.ceil(readFileSync(join(workingDir, f), 'utf-8').length / 4)
+        }
+      }
+    }
+
+    let pinnedTokens = 0
+    let pinnedCount = 0
+    for (const entry of index) {
+      if (entry.pinned) {
+        pinnedCount++
+        const nodePath = join(paths.nodes, `${entry.path}.md`)
+        if (existsSync(nodePath)) {
+          pinnedTokens += Math.ceil(readFileSync(nodePath, 'utf-8').length / 4)
+        }
+      }
+    }
+
+    const totalInjectionTokens = priorsTokens + mapTokens + somaTokens + dreamsTokens + workingTokens + pinnedTokens
+    const injectionBudget = 15000
+
     const topCategory = Object.entries(categories).sort((a, b) => b[1] - a[1])[0]
     const balanceRatio = topCategory ? topCategory[1] / Math.max(nodeCount, 1) : 0
 
+    let pipelineStats = { scribe: 0, auditor: 0, librarian: 0, dreamer: 0, skillforge: 0, failed: 0 }
+    try {
+      const doneDir = join(graphRoot, '.jobs', 'done')
+      if (existsSync(doneDir)) {
+        for (const f of readdirSync(doneDir)) {
+          if (!f.endsWith('.json')) continue
+          try {
+            const job = JSON.parse(readFileSync(join(doneDir, f), 'utf-8'))
+            const type = job.type || ''
+            if (type in pipelineStats) (pipelineStats as any)[type]++
+            if (job.state === 'failed') pipelineStats.failed++
+          } catch { /* skip */ }
+        }
+      }
+    } catch { /* skip */ }
+
+    let lowConfidenceCount = 0
+    let noDecayRateCount = 0
+    for (const entry of index) {
+      if ((entry.confidence || 0.5) < 0.4) lowConfidenceCount++
+    }
+
+    const injectionEfficiency = totalInjectionTokens > 0 ? Math.min(totalInjectionTokens / injectionBudget, 2) : 0
+
     const score = Math.round(
-      (nodeCount > 0 ? Math.min(nodeCount / 50, 1) * 25 : 0) +
-      (staleCount === 0 ? 25 : Math.max(0, 25 - (staleCount / nodeCount) * 50)) +
-      (orphanCount === 0 ? 25 : Math.max(0, 25 - (orphanCount / nodeCount) * 50)) +
-      (mapUsage < 0.8 ? 25 : Math.max(0, 25 - (mapUsage - 0.8) * 100))
+      (nodeCount > 0 ? Math.min(nodeCount / 50, 1) * 15 : 0) +
+      (staleCount === 0 ? 15 : Math.max(0, 15 - (staleCount / nodeCount) * 30)) +
+      (orphanCount === 0 ? 10 : Math.max(0, 10 - (orphanCount / nodeCount) * 20)) +
+      (mapUsage < 0.8 ? 10 : Math.max(0, 10 - (mapUsage - 0.8) * 100)) +
+      (priorsTokens < 1500 ? 15 : Math.max(0, 15 - (priorsTokens - 1500) / 200)) +
+      (pinnedTokens < 3000 ? 15 : Math.max(0, 15 - (pinnedTokens - 3000) / 500)) +
+      (lowConfidenceCount / Math.max(nodeCount, 1) < 0.2 ? 10 : Math.max(0, 10 - (lowConfidenceCount / Math.max(nodeCount, 1)) * 50)) +
+      (totalInjectionTokens < injectionBudget ? 10 : 0)
     )
 
     res.json({
@@ -1366,6 +1434,28 @@ app.get('/api/health', (_req, res) => {
       mapUsage: Math.round(mapUsage * 100),
       balanceDominant: topCategory ? { category: topCategory[0], ratio: Math.round(balanceRatio * 100) } : null,
       score: Math.min(score, 100),
+      lowConfidenceCount,
+      lowConfidenceRatio: nodeCount > 0 ? Math.round((lowConfidenceCount / nodeCount) * 100) : 0,
+      pipelineStats,
+      tokenAccounting: {
+        priors: priorsTokens,
+        priorsBudget: 1500,
+        map: mapTokens,
+        mapBudget,
+        soma: somaTokens,
+        somaBudget: 800,
+        dreams: dreamsTokens,
+        dreamsBudget: 400,
+        working: workingTokens,
+        workingBudget: 2000,
+        pinned: pinnedTokens,
+        pinnedCount,
+        pinnedBudget: 3000,
+        total: totalInjectionTokens,
+        budget: injectionBudget,
+        overBudget: totalInjectionTokens > injectionBudget,
+        efficiency: Math.round(injectionEfficiency * 100),
+      },
     })
   } catch (err) {
     console.error('Error in /api/health:', err)

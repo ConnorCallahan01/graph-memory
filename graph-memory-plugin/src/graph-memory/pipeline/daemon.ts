@@ -10,6 +10,7 @@ import { GraphMemoryJob } from "./job-schema.js";
 import { runPipelineWorker } from "./worker-runner.js";
 import { loadRuntimeConfig } from "../runtime.js";
 import { regenerateCoreContextFiles, regenerateDreamContext } from "./graph-ops.js";
+import { runDecay } from "./decay.js";
 import { updateProjectWorkingFromSession } from "../project-working.js";
 import { scoreCandidates, computeNodeContentHash } from "./skillforge-score.js";
 import { listManifests, findDriftedManifests } from "./skillforge-manifest.js";import { getAssistantTracePath, getToolTracePath } from "../session-trace.js";
@@ -982,6 +983,39 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
   }
 }
 
+function cleanupOrphanSnapshots(): void {
+  const bufferDir = CONFIG.paths.buffer;
+  if (!fs.existsSync(bufferDir)) return;
+
+  const MAX_AGE_MS = 4 * 60 * 60 * 1000;
+  const now = Date.now();
+  const runningJobs = listJobs("running");
+  const queuedJobs = listJobs("queued");
+  const activeSnapshotPaths = new Set<string>();
+  for (const j of [...runningJobs, ...queuedJobs]) {
+    const sp = (j.payload as any)?.snapshotPath;
+    if (sp) activeSnapshotPaths.add(sp);
+  }
+
+  let cleaned = 0;
+  for (const file of fs.readdirSync(bufferDir)) {
+    if (!file.startsWith("snapshot_") || !file.endsWith(".jsonl")) continue;
+
+    const filePath = path.join(bufferDir, file);
+    if (activeSnapshotPaths.has(filePath)) continue;
+
+    const stat = fs.statSync(filePath);
+    if (now - stat.mtimeMs < MAX_AGE_MS) continue;
+
+    fs.unlinkSync(filePath);
+    cleaned++;
+  }
+
+  if (cleaned > 0) {
+    activityBus.log("system:info", `Cleaned ${cleaned} orphan snapshot(s) older than 4 hours`);
+  }
+}
+
 function scavengeStaleBuffers(): void {
   const bufferDir = CONFIG.paths.buffer;
   if (!fs.existsSync(bufferDir)) return;
@@ -1057,7 +1091,23 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
       maybeEnqueueSkillforgeJobs();
       maybeEnqueueSkillforgeRefresh();
       scavengeStaleBuffers();
+      cleanupOrphanSnapshots();
       requeueStaleRunningJobs(30 * 60_000);
+
+      if (!hasRunningGraphLevelJob()) {
+        try {
+          const { decayed, archived } = runDecay();
+          if (decayed > 0 || archived > 0) {
+            regenerateCoreContextFiles();
+            activityBus.log("daemon:decay", `Tick decay: ${decayed} decayed, ${archived} archived`, {
+              decayed,
+              archived,
+            });
+          }
+        } catch (err: any) {
+          activityBus.log("system:error", `Decay pass failed: ${err.message}`);
+        }
+      }
 
       writeDaemonState({
         running: true,

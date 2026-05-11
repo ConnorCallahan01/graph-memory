@@ -168,7 +168,8 @@ The JSON structure:
           "gist": "One-sentence description for MAP",
           "tags": ["tag1", "tag2"],
           "keywords": ["keyword1", "keyword2"],
-          "confidence": 0.5,
+          "confidence": 0.6,
+          "decay_rate": 0.05,
           "edges": [{"target": "existing/node", "type": "relates_to", "weight": 0.7}],
           "content": "Full markdown content for the node file"
         }
@@ -193,7 +194,7 @@ After writing the delta file:
 ## Delta Types Reference
 
 ```json
-{"type": "create_node", "path": "category/name", "title": "...", "gist": "...", "tags": [], "keywords": [], "confidence": 0.5, "edges": [], "content": "...", "project": "owner/repo"}
+{"type": "create_node", "path": "category/name", "title": "...", "gist": "...", "tags": [], "keywords": [], "confidence": 0.6, "decay_rate": 0.05, "edges": [], "content": "...", "project": "owner/repo"}
 {"type": "update_stance", "path": "existing/node", "change": "What changed and why", "new_confidence": 0.8}
 {"type": "soma_signal", "path": "existing/or/new/node", "valence": "positive|negative|neutral", "intensity": 0.7, "marker": "Compressed behavioral directive"}
 {"type": "create_edge", "from": "node/a", "to": "node/b", "edge_type": "relates_to", "weight": 0.7, "reasoning": "Why these are connected"}

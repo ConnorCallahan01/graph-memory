@@ -75,6 +75,36 @@ function ensureDir(filePath: string) {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 }
 
+function findSimilarNode(category: string, gist: string, excludePath?: string): string | null {
+  const indexPath = CONFIG.paths.index;
+  if (!fs.existsSync(indexPath)) return null;
+
+  let index: any[];
+  try { index = JSON.parse(fs.readFileSync(indexPath, "utf-8")); } catch { return null; }
+
+  const gistWords = new Set(gist.toLowerCase().replace(/\*\*/g, "").split(/\s+/).filter((w: string) => w.length > 3));
+  if (gistWords.size < 2) return null;
+
+  let bestMatch: { path: string; score: number } | null = null;
+
+  for (const entry of index) {
+    if (excludePath && entry.path === excludePath) continue;
+    const entryCategory = (entry.path || "").split("/")[0];
+    if (entryCategory !== category) continue;
+
+    const entryGist = (entry.gist || "").toLowerCase().replace(/\*\*/g, "");
+    const entryWords = entryGist.split(/\s+/).filter((w: string) => w.length > 3);
+    const overlap = entryWords.filter((w: string) => gistWords.has(w)).length;
+    const score = overlap / Math.max(gistWords.size, entryWords.length);
+
+    if (score > 0.5 && (!bestMatch || score > bestMatch.score)) {
+      bestMatch = { path: entry.path, score };
+    }
+  }
+
+  return bestMatch?.path || null;
+}
+
 function handleCreateNode(delta: NormalizedDelta, errors: string[]): boolean {
   if (!delta.path) {
     errors.push("create_node: missing path");
@@ -87,7 +117,7 @@ function handleCreateNode(delta: NormalizedDelta, errors: string[]): boolean {
     return false;
   }
 
-  // If node exists, merge instead of overwrite
+  // If node exists at exact path, merge instead of overwrite
   if (fs.existsSync(filePath)) {
     try {
       const raw = fs.readFileSync(filePath, "utf-8");
@@ -130,6 +160,49 @@ function handleCreateNode(delta: NormalizedDelta, errors: string[]): boolean {
     }
   }
 
+  // Dedup check: if a similar node exists in the same category, merge into it instead
+  if (delta.gist) {
+    const category = delta.path.split("/")[0] || "";
+    const existing = findSimilarNode(category, delta.gist, delta.path);
+    if (existing) {
+      const existingPath = safePath(CONFIG.paths.nodes, existing, ".md");
+      if (existingPath && fs.existsSync(existingPath)) {
+        try {
+          const raw = fs.readFileSync(existingPath, "utf-8");
+          const parsed = matter(raw);
+
+          if (delta.confidence !== undefined && delta.confidence > (parsed.data.confidence || 0)) {
+            parsed.data.confidence = delta.confidence;
+          }
+
+          const existingEdges = parsed.data.edges || [];
+          const existingTargets = new Set(existingEdges.map((e: any) => e.target));
+          for (const edge of delta.edges || []) {
+            if (!existingTargets.has(edge.target)) {
+              existingEdges.push({ ...edge, type: validateEdgeType(edge.type) });
+            }
+          }
+          parsed.data.edges = existingEdges;
+
+          parsed.data.tags = [...new Set([...(parsed.data.tags || []), ...(delta.tags || [])])];
+          parsed.data.keywords = [...new Set([...(parsed.data.keywords || []), ...(delta.keywords || [])])];
+
+          if (delta.content && !parsed.content.includes(delta.content.slice(0, 100))) {
+            parsed.content = parsed.content.trimEnd() + `\n\n---\n\n${delta.content}`;
+          }
+
+          parsed.data.updated = new Date().toISOString().slice(0, 10);
+          fs.writeFileSync(existingPath, matter.stringify(parsed.content, parsed.data));
+
+          activityBus.log("graph:node_merged", `Dedup merge: ${delta.path} → ${existing} (similar gist)`);
+          return true;
+        } catch {
+          // Fall through to create new
+        }
+      }
+    }
+  }
+
   // Create new node
   ensureDir(filePath);
 
@@ -138,7 +211,7 @@ function handleCreateNode(delta: NormalizedDelta, errors: string[]): boolean {
     id: delta.path,
     title: delta.title || delta.path.split("/").pop(),
     gist: delta.gist || "",
-    confidence: delta.confidence ?? 0.5,
+    confidence: delta.confidence ?? 0.6,
     created: now,
     updated: now,
     decay_rate: 0.05,

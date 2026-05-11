@@ -41,32 +41,16 @@ import SessionReplay from './components/SessionReplay'
 type ViewTab = 'brief' | 'graph' | 'context' | 'sessions'
 
 function deriveProjects(
-  nodes: GraphNode[],
   workingFiles: ProjectWorkingFile[],
-  brief: LatestBrief | null,
 ): string[] {
   const seen = new Set<string>()
   const projects: string[] = []
 
-  const add = (name: string) => {
-    if (name && name !== 'global' && !seen.has(name)) {
-      seen.add(name)
-      projects.push(name)
-    }
-  }
-
-  if (brief?.json?.project_breakdown) {
-    for (const p of brief.json.project_breakdown) {
-      add(p.project)
-    }
-  }
-
   for (const wf of workingFiles) {
-    add(wf.project)
-  }
-
-  for (const node of nodes) {
-    if (node.data.project) add(node.data.project)
+    if (wf.project && wf.project !== 'global' && !seen.has(wf.project)) {
+      seen.add(wf.project)
+      projects.push(wf.project)
+    }
   }
 
   return projects
@@ -180,8 +164,18 @@ export default function App() {
   }, [loadGraph, loadBrief, loadStatus, loadWorkingFiles, loadActivity, loadChanges, loadPipeline, loadSkills, loadHealth])
 
   useEffect(() => {
-    setProjects(deriveProjects(nodes, projectWorkingFiles, brief))
+    setProjects(deriveProjects(projectWorkingFiles))
   }, [nodes, projectWorkingFiles, brief])
+
+  useEffect(() => {
+    if (projectFilter || projects.length === 0) return
+    const activeNames = status?.activeProjects?.map((p: any) => p.name).filter((n: string) => n && n !== 'global') || []
+    if (activeNames.length > 0 && projects.includes(activeNames[0])) {
+      setProjectFilter(activeNames[0])
+    } else {
+      setProjectFilter(projects[0])
+    }
+  }, [projects, status?.activeProjects])
 
   useEffect(() => {
     const unsub = subscribeToEvents((type) => {
@@ -213,6 +207,14 @@ export default function App() {
       })()
     : elements
 
+  const projectNodeCounts = new Map<string, number>()
+  for (const n of nodes) {
+    const p = n.data.project || '__global__'
+    projectNodeCounts.set(p, (projectNodeCounts.get(p) || 0) + 1)
+  }
+
+  const activeProjectNames = status?.activeProjects?.map((p: any) => p.name).filter((n: string) => n && n !== 'global') || []
+
   return (
     <div className="shell" ref={shellRef}>
       <header className="topbar">
@@ -239,9 +241,9 @@ export default function App() {
           {status && (
             <>
               <span className="status-metric">{status.nodeCount} nodes</span>
-              {status.activeProjects.length > 1 && (
-                <span className="status-metric status-metric-accent">
-                  {status.activeProjects.length} active
+              {health?.tokenAccounting && (
+                <span className={`status-metric${health.tokenAccounting.overBudget ? ' status-metric-err' : ''}`}>
+                  {health.tokenAccounting.total.toLocaleString()}t/{health.tokenAccounting.budget.toLocaleString()}t
                 </span>
               )}
             </>
@@ -249,25 +251,29 @@ export default function App() {
         </div>
       </header>
 
-      {projects.length > 0 && (
-        <div className="project-strip">
-          <button
-            className={`project-chip${!projectFilter ? ' active' : ''}`}
-            onClick={() => setProjectFilter(null)}
-          >
-            All
-          </button>
-          {projects.map((p) => (
-            <button
-              key={p}
-              className={`project-chip${projectFilter === p ? ' active' : ''}`}
-              onClick={() => setProjectFilter(projectFilter === p ? null : p)}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-      )}
+      <div className="project-strip">
+        {projects.length === 0 ? (
+          <span className="project-empty">No projects detected</span>
+        ) : (
+          projects.map((p) => {
+            const isActive = activeProjectNames.includes(p)
+            const isSelected = projectFilter === p
+            const count = projectNodeCounts.get(p) || 0
+            const globalCount = projectNodeCounts.get('__global__') || 0
+            return (
+              <button
+                key={p}
+                className={`project-chip${isSelected ? ' active' : ''}${isActive ? ' live' : ''}`}
+                onClick={() => setProjectFilter(isSelected && projects.length > 1 ? (projects.find(x => x !== p) || null) : p)}
+              >
+                {p}
+                <span className="project-chip-count">{count > 0 ? `${count + globalCount}` : `${globalCount}`}</span>
+                {isActive && <span className="project-chip-dot" />}
+              </button>
+            )
+          })
+        )}
+      </div>
 
       <main className="main">
         <div className={`content-area${view === 'graph' || view === 'sessions' ? ' graph-mode' : ''}`}>

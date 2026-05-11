@@ -198,3 +198,4 @@ echo '{"type":"skillforge:complete","message":"Skillforge complete for {nodePath
 7. **Never overwrite existing skills** — if a command file already exists, skip and log a warning
 8. **Content hash for drift detection** — compute a simple hash of the source node content for the manifest
 9. **Skip short procedures** — if the source node describes fewer than 5 steps or is under 200 words of procedural content, skip skillforging. Note it in the manifest with `"skipped": true, "reason": "procedure too short for skill file"`. Short procedures are better served as pinned nodes.
+10. **Access tracking** — the scoring relies on `access_count`, `recall_action_count`, and `distinct_sessions` being accurate. If you notice these fields are missing or obviously stale (e.g., a frequently-discussed topic has access_count: 0), note it in the manifest but do not attempt to repair the counts.

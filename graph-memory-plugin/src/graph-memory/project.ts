@@ -38,10 +38,9 @@ export function detectProject(cwd: string): ProjectInfo {
     return projectCache.get(cwd)!;
   }
 
-  let result: ProjectInfo = { name: "global" };
+  let result: ProjectInfo = { name: deriveProjectName(cwd), gitRoot: cwd };
 
   try {
-    // Get git root (use cwd option to avoid shell injection)
     const gitRoot = execSync("git rev-parse --show-toplevel", {
       cwd,
       encoding: "utf-8",
@@ -49,7 +48,6 @@ export function detectProject(cwd: string): ProjectInfo {
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
 
-    // Check cache by gitRoot too (different cwd, same repo)
     for (const [, cached] of projectCache) {
       if (cached.gitRoot === gitRoot) {
         projectCache.set(cwd, cached);
@@ -57,7 +55,8 @@ export function detectProject(cwd: string): ProjectInfo {
       }
     }
 
-    // Get remote URL
+    result.gitRoot = gitRoot;
+
     try {
       const remoteUrl = execSync("git remote get-url origin", {
         cwd,
@@ -67,19 +66,26 @@ export function detectProject(cwd: string): ProjectInfo {
       }).trim();
 
       const name = extractOwnerRepo(remoteUrl);
-      result = { name: name || "global", gitRoot };
+      if (name) result = { name, gitRoot };
     } catch {
-      // No remote — use directory name as project identifier
-      const dirName = path.basename(gitRoot);
-      result = { name: dirName, gitRoot };
+      // No remote — use directory name
+      result.name = path.basename(gitRoot);
     }
   } catch {
-    // Not a git repo
-    result = { name: "global" };
+    // Not a git repo — use cwd-derived name
   }
 
   projectCache.set(cwd, result);
   return result;
+}
+
+function deriveProjectName(cwd: string): string {
+  const base = path.basename(cwd);
+  const parent = path.basename(path.dirname(cwd));
+  if (parent && parent !== "/" && parent !== "Users" && parent !== "home") {
+    return `${parent}/${base}`;
+  }
+  return base;
 }
 
 /**

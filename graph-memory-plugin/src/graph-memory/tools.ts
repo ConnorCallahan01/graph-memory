@@ -72,11 +72,11 @@ export async function handleGraphMemory(args: {
     case "read_node":
       return readNode(args.path, args.sessionId);
     case "search":
-      return searchGraph(args.query);
+      return searchGraph(args.query, args.sessionId);
     case "recall":
       return recallGraph(args.query, args.depth, args.sessionId);
     case "list_edges":
-      return listEdges(args.path);
+      return listEdges(args.path, args.sessionId);
     case "read_dream":
       return readDream(args.path);
     case "write_note":
@@ -392,6 +392,9 @@ function recallGraph(query?: string, depth?: number, sessionId?: string): { cont
   for (const r of results) {
     updateLastAccessed(r.path, { actionType: "recall", sessionId });
   }
+  for (const c of connectedNodes) {
+    updateLastAccessed(c.path, { actionType: "read", sessionId });
+  }
 
   // Format output
   const sections: string[] = [];
@@ -631,6 +634,8 @@ export function updateLastAccessed(nodePath: string, options?: { actionType?: "r
     } catch { /* Non-critical */ }
   }
 
+  reinforceDreams(nodePath);
+
   try {
     const index = loadIndex();
     const entry = index.find((e: any) => e.path === nodePath);
@@ -658,7 +663,38 @@ export function updateLastAccessed(nodePath: string, options?: { actionType?: "r
   } catch { /* Non-critical */ }
 }
 
-function searchGraph(query?: string) {
+export function reinforceDreams(nodePath: string): void {
+  const pendingDir = path.join(CONFIG.paths.dreams, "pending");
+  if (!fs.existsSync(pendingDir)) return;
+
+  const maxConfidence = 0.55;
+  const boost = 0.05;
+  let reinforced = 0;
+
+  for (const file of fs.readdirSync(pendingDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      const filePath = path.join(pendingDir, file);
+      const dream = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+      const refs: string[] = dream.nodes_referenced || [];
+      if (!refs.includes(nodePath)) continue;
+      if ((dream.confidence || 0) >= maxConfidence) continue;
+
+      dream.confidence = Math.round(Math.min((dream.confidence || 0.3) + boost, maxConfidence) * 1000) / 1000;
+      dream.reinforcement_sessions = (dream.reinforcement_sessions || 0) + 1;
+      dream.last_updated = new Date().toISOString();
+      dream.reinforcement_note = (dream.reinforcement_note || "") +
+        `\n[${new Date().toISOString().slice(0, 10)}]: Referenced node ${nodePath} was accessed. Implicit boost +${boost}. Now ${dream.confidence}.`;
+      fs.writeFileSync(filePath, JSON.stringify(dream, null, 2));
+      reinforced++;
+    } catch { /* skip malformed dreams */ }
+  }
+
+  if (reinforced > 0) {
+    activityBus.log("graph:dream_reinforced", `Implicitly reinforced ${reinforced} dream(s) via node access: ${nodePath}`);
+  }
+}
+
+function searchGraph(query?: string, sessionId?: string) {
   if (!query) {
     return { content: [{ type: "text" as const, text: "Error: query required for search" }], isError: true };
   }
@@ -713,6 +749,10 @@ function searchGraph(query?: string) {
       })
       .join("\n\n");
 
+    for (const r of results) {
+      updateLastAccessed(r.path, { actionType: "read", sessionId });
+    }
+
     return { content: [{ type: "text" as const, text: formatted }] };
   } catch (err) {
     return { content: [{ type: "text" as const, text: `Search error: ${err}` }], isError: true };
@@ -721,7 +761,7 @@ function searchGraph(query?: string) {
 
 // recencyBoost imported from scoring.ts
 
-function listEdges(nodePath?: string) {
+function listEdges(nodePath?: string, sessionId?: string) {
   if (!nodePath) {
     return { content: [{ type: "text" as const, text: "Error: path required for list_edges" }], isError: true };
   }
@@ -737,6 +777,7 @@ function listEdges(nodePath?: string) {
   const raw = fs.readFileSync(fullPath, "utf-8");
 
   try {
+    updateLastAccessed(nodePath, { actionType: "read", sessionId });
     const parsed = matter(raw);
     const edges = parsed.data.edges || [];
     const antiEdges = parsed.data.anti_edges || [];

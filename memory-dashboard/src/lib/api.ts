@@ -262,6 +262,28 @@ export interface MemoryHealth {
   mapUsage: number
   balanceDominant: { category: string; ratio: number } | null
   score: number
+  lowConfidenceCount: number
+  lowConfidenceRatio: number
+  pipelineStats: { scribe: number; auditor: number; librarian: number; dreamer: number; skillforge: number; failed: number }
+  tokenAccounting: {
+    priors: number
+    priorsBudget: number
+    map: number
+    mapBudget: number
+    soma: number
+    somaBudget: number
+    dreams: number
+    dreamsBudget: number
+    working: number
+    workingBudget: number
+    pinned: number
+    pinnedCount: number
+    pinnedBudget: number
+    total: number
+    budget: number
+    overBudget: boolean
+    efficiency: number
+  }
 }
 
 export interface LatestBrief {
