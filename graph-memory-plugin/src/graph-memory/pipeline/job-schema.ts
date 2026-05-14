@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-export type GraphMemoryJobType = "scribe" | "observer" | "compressor" | "working_update" | "auditor" | "librarian" | "dreamer" | "dreamer_v3" | "memory_analysis" | "skillforge" | "skillforge_refresh" | "bootstrap_project_doc";
+export type GraphMemoryJobType = "scribe" | "observer" | "compressor" | "working_update" | "auditor" | "librarian" | "dreamer" | "dreamer_v3" | "memory_analysis" | "skillforge" | "skillforge_refresh" | "bootstrap_project_doc" | "notion_sync";
 export type GraphMemoryJobState = "queued" | "running" | "done" | "failed";
 
 export interface ScribeJobPayload {
@@ -78,6 +78,15 @@ export interface DreamerV3JobPayload {
   reason: string;
 }
 
+export interface NotionSyncJobPayload {
+  reason: string;
+  date: string;
+  forceFullSync?: boolean;
+  batches?: string[];
+  skipInbound?: boolean;
+  batchIndex?: number;
+}
+
 export type GraphMemoryJobPayload =
   | ScribeJobPayload
   | ObserverJobPayload
@@ -90,7 +99,8 @@ export type GraphMemoryJobPayload =
   | MemoryAnalysisJobPayload
   | SkillforgeJobPayload
   | SkillforgeRefreshJobPayload
-  | BootstrapProjectDocPayload;
+  | BootstrapProjectDocPayload
+  | NotionSyncJobPayload;
 
 export interface GraphMemoryJob<TPayload = GraphMemoryJobPayload> {
   id: string;
@@ -134,6 +144,8 @@ export function defaultMaxAttempts(type: GraphMemoryJobType): number {
     case "skillforge":
     case "skillforge_refresh":
     case "bootstrap_project_doc":
+      return 2;
+    case "notion_sync":
       return 2;
   }
 }

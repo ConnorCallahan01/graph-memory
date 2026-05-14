@@ -17,6 +17,7 @@ const PRIORITY: Record<GraphMemoryJobType, number> = {
   memory_analysis: 6,
   bootstrap_project_doc: 3,
   dreamer_v3: 4,
+  notion_sync: 7,
 };
 
 function stateDir(state: GraphMemoryJobState): string {

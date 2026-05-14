@@ -11,7 +11,7 @@ const app = express()
 const PORT = Number.parseInt(process.env.MEMORY_DASHBOARD_API_PORT || process.env.PORT || '3001', 10)
 
 type JobState = 'queued' | 'running' | 'done' | 'failed'
-type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc'
+type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc' | 'notion_sync'
 
 interface RuntimeConfig {
   mode?: 'manual' | 'docker'
@@ -74,7 +74,7 @@ interface ProjectWorkingFileSummary {
 }
 
 interface PipelineCutoffStatus {
-  stage: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'memory_analysis'
+  stage: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'memory_analysis' | 'notion_sync'
   current: number
   threshold: number | null
   remaining: number | null
@@ -555,10 +555,12 @@ function readAllJobs(graphRoot = getGraphRoot()) {
     observer: { queued: 0, running: 0, done: 0, failed: 0 },
     compressor: { queued: 0, running: 0, done: 0, failed: 0 },
     bootstrap_project_doc: { queued: 0, running: 0, done: 0, failed: 0 },
+    notion_sync: { queued: 0, running: 0, done: 0, failed: 0 },
   }
 
   for (const state of Object.keys(jobs) as JobState[]) {
     for (const job of jobs[state]) {
+      if (!byType[job.type]) byType[job.type] = { queued: 0, running: 0, done: 0, failed: 0 }
       byType[job.type][state] += 1
     }
   }
@@ -675,6 +677,25 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
     const today = new Date().toISOString().slice(0, 10)
     return existsSync(join(getPaths(graphRoot).dailyBriefs, `${today}.md`))
   })()
+
+  const notionSyncJobState = hasJobInFlight(jobs, 'notion_sync')
+  const notionSyncEnabled = (() => {
+    const configPath = join(graphRoot, '..', 'config.yml')
+    if (!existsSync(configPath)) return false
+    const raw = readFileSync(configPath, 'utf-8')
+    return /notionSync\.enabled:\s*true/i.test(raw)
+  })()
+  const notionSyncStateFile = (() => {
+    const statePath = join(graphRoot, '.notion-sync-state.json')
+    if (!existsSync(statePath)) return null
+    try { return JSON.parse(readFileSync(statePath, 'utf-8')) } catch { return null }
+  })()
+  const notionLastSyncAt = notionSyncStateFile?.lastSyncAt ? new Date(notionSyncStateFile.lastSyncAt) : null
+  const notionSyncHour = notionSyncStateFile?.syncHourLocal ?? 8
+  const notionPageCount = notionSyncStateFile?.pages ? Object.keys(notionSyncStateFile.pages).length : 0
+  const notionRowCount = notionSyncStateFile?.databases
+    ? Object.values(notionSyncStateFile.databases as Record<string, { rowCount?: number }>).reduce((s: number, d: { rowCount?: number }) => s + (d.rowCount ?? 0), 0)
+    : 0
 
   return [
     {
@@ -797,6 +818,22 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
           : analysisReady
             ? `Daily brief window is open after ${DAILY_ANALYSIS_HOUR_LOCAL}:00 local.`
             : `Daily brief will become eligible after ${DAILY_ANALYSIS_HOUR_LOCAL}:00 local.`,
+    },
+    {
+      stage: 'notion_sync',
+      current: notionPageCount + notionRowCount,
+      threshold: null,
+      remaining: null,
+      status: !notionSyncEnabled
+        ? 'idle'
+        : notionSyncJobState || (notionLastSyncAt ? 'idle' : 'waiting'),
+      detail: !notionSyncEnabled
+        ? 'Notion sync is not enabled.'
+        : notionSyncJobState
+          ? `Notion sync is ${notionSyncJobState}.`
+          : notionLastSyncAt
+            ? `${notionPageCount} pages, ${notionRowCount} rows synced. Last sync ${notionLastSyncAt.toLocaleDateString()} ${notionLastSyncAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}. Next at ${notionSyncHour}:00.`
+            : `Notion sync enabled. Waiting for first sync at ${notionSyncHour}:00 local.`,
     },
   ]
 }
@@ -1770,6 +1807,31 @@ app.get('/api/skills', (_req, res) => {
       .filter(Boolean)
     res.json(skills)
   } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+app.get('/api/skills/:name/content', (req, res) => {
+  try {
+    const dir = getPaths().skillforge
+    if (!existsSync(dir)) { res.status(404).json({ error: 'No skills directory' }); return }
+    const manifestFile = readdirSync(dir).find((f) => {
+      if (!f.endsWith('.json')) return false
+      try {
+        const m = JSON.parse(readFileSync(join(dir, f), 'utf-8'))
+        return m.skill_name === req.params.name
+      } catch { return false }
+    })
+    if (!manifestFile) { res.status(404).json({ error: 'Skill not found' }); return }
+    const manifest = JSON.parse(readFileSync(join(dir, manifestFile), 'utf-8'))
+    const cmdPath = manifest.files?.claude_command || manifest.files?.opencode_command
+    if (!cmdPath) { res.status(404).json({ error: 'No command file path' }); return }
+    const projectRoot = manifest.project_root
+    if (!projectRoot) { res.status(404).json({ error: 'No project root' }); return }
+    const fullPath = join(projectRoot, cmdPath)
+    if (!existsSync(fullPath)) { res.status(404).json({ error: 'Command file not found on disk' }); return }
+    res.json({ content: readFileSync(fullPath, 'utf-8'), manifest })
+  } catch (err) {
     res.status(500).json({ error: 'Internal server error' })
   }
 })

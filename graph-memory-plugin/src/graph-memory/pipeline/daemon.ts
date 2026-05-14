@@ -22,6 +22,8 @@ import { processCompressorOutputs } from "./compressor-tools.js";
 import { rebuildV3Index } from "./graph-index-v3.js";
 import { bootstrapProjectDoc, detectDocDrift } from "./bootstrap.js";
 import { buildDreamerV3Input, processDreamerV3Outputs } from "./dreamer-v3-tools.js";
+import { readNotionSyncState, writeNotionSyncState, buildNotionDiff, writeDiffReport, readSyncPlan, executeNotionSync } from "./notion-sync.js";
+import { detectInboundEdits, writeInboundInput, readInboundPlan, applyInboundDeltas, writeInboundDeltas, writeMergeInput, readMergeResult, InboundEdit } from "./notion-inbound.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.resolve(__dirname, "../../../agents");
@@ -331,7 +333,10 @@ function reconcileProjectWorkingBacklog(): void {
     };
     const project = payload.project;
     const sessionId = payload.sessionId;
-    if (!project || project === "global" || !sessionId) {
+    if (!project || project === "global" || !sessionId || project.includes("/") === false && !project.includes("_")) {
+      continue;
+    }
+    if (project.startsWith("private/") || project.startsWith("tmp/") || project.startsWith("/")) {
       continue;
     }
 
@@ -663,6 +668,37 @@ function maybeEnqueueDailyAnalysisJob(): void {
     },
     triggerSource: "daemon:daily-analysis-schedule",
     idempotencyKey: `memory-analysis:${date}`,
+  });
+}
+
+function maybeEnqueueNotionSync(): void {
+  if (!CONFIG.notionSync.enabled) return;
+
+  const notionState = readNotionSyncState();
+  if (!notionState.parentPageId) return;
+
+  const timeZone = CONFIG.session.dailyAnalysisTimeZone;
+  const { date, hour } = getDatePartsInTimeZone(timeZone);
+  if (hour < CONFIG.notionSync.syncHourLocal) return;
+
+  const briefPaths = getDailyBriefPaths(date);
+  if (!fs.existsSync(briefPaths.jsonPath) && !fs.existsSync(briefPaths.markdownPath)) return;
+
+  if (hasActiveJob("notion_sync") || hasActiveJob("memory_analysis")) return;
+
+  if (notionState.lastSyncAt) {
+    const elapsed = Date.now() - new Date(notionState.lastSyncAt).getTime();
+    if (elapsed < 20 * 60 * 60 * 1000) return;
+  }
+
+  enqueueJob({
+    type: "notion_sync",
+    payload: {
+      reason: `daily notion sync for ${date}`,
+      date,
+    },
+    triggerSource: "daemon:daily-notion-sync-schedule",
+    idempotencyKey: `notion-sync:${date}`,
   });
 }
 
@@ -1130,6 +1166,331 @@ async function runMemoryAnalysis(job: GraphMemoryJob): Promise<void> {
   }
 }
 
+async function runNotionInbound(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as { reason: string; date: string };
+
+  activityBus.log("notion-inbound:start", `Notion inbound starting: ${payload.reason}`, {
+    jobId: job.id,
+    date: payload.date,
+  });
+
+  const notionState = readNotionSyncState();
+  if (!notionState.parentPageId) {
+    activityBus.log("notion-inbound:error", "Notion inbound skipped — no parent page ID configured");
+    return;
+  }
+
+  if (CONFIG.notionSync.skipInbound) {
+    activityBus.log("notion-inbound:complete", "Notion inbound skipped — skipInbound is set");
+    return;
+  }
+
+  const inboundResult = detectInboundEdits(notionState);
+
+  if (inboundResult.edits.length === 0) {
+    writeNotionSyncState(notionState);
+    activityBus.log("notion-inbound:complete", "Notion inbound complete — no human edits detected", {
+      jobId: job.id,
+      date: payload.date,
+    });
+    return;
+  }
+
+  writeNotionSyncState(notionState);
+
+  if (inboundResult.errors.length > 0) {
+    activityBus.log("notion-inbound:error", `Notion inbound had ${inboundResult.errors.length} fetch errors`, {
+      jobId: job.id,
+      errors: inboundResult.errors,
+    });
+  }
+
+  const mergeNeeded = inboundResult.edits.filter((e) => e.classification === "merge_needed");
+  const inboundOnly = inboundResult.edits.filter((e) => e.classification === "inbound_only");
+
+  if (inboundOnly.length > 0) {
+    const inputPath = writeInboundInput(inboundOnly, payload.date);
+    const inputPathForWorker = toWorkerPath(inputPath);
+    const planPathForWorker = toWorkerPath(
+      path.join(CONFIG.paths.graphRoot, `.notion-inbound-plan-${payload.date}.json`)
+    );
+    const inboundAgentPath = path.join(AGENTS_DIR, "memory-notion-inbound.md");
+
+    const prompt = `Read the Notion inbound instructions at ${inboundAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Inbound input: ${inputPathForWorker}. Write the inbound plan to ${planPathForWorker}. Date: ${payload.date}.`;
+
+    const result = await runPipelineWorker({
+      name: `notion-inbound-${job.id}`,
+      prompt,
+      graphRoot: CONFIG.paths.graphRoot,
+      logDir: CONFIG.paths.pipelineLogs,
+      addDirs: [AGENTS_DIR],
+      timeoutMs: 10 * 60_000,
+    });
+
+    job.logFile = result.logFile;
+    job.workerPid = result.pid;
+    updateRunningJob(job);
+
+    if (result.exitCode !== 0) {
+      activityBus.log("notion-inbound:error", `Notion inbound worker exited with code ${result.exitCode}. See ${result.logFile}`);
+      return;
+    }
+
+    const deltas = readInboundPlan(payload.date);
+    if (!deltas || deltas.length === 0) {
+      activityBus.log("notion-inbound:complete", "Notion inbound worker produced no deltas");
+      return;
+    }
+
+    const applyResult = applyInboundDeltas(deltas);
+    writeInboundDeltas(deltas, payload.date);
+
+    activityBus.log("notion-inbound:complete", `Notion inbound complete: ${applyResult.applied} deltas applied`, {
+      jobId: job.id,
+      date: payload.date,
+      applied: applyResult.applied,
+      errors: applyResult.errors,
+    });
+  }
+
+  for (const edit of mergeNeeded) {
+    try {
+      await runNotionMerge(edit, job.id, payload.date);
+    } catch (err: any) {
+      activityBus.log("notion-merge:error", `Merge failed for ${edit.notionKey}: ${err.message}`, {
+        jobId: job.id,
+        notionKey: edit.notionKey,
+      });
+    }
+  }
+
+  notionState.lastInboundAt = new Date().toISOString();
+  writeNotionSyncState(notionState);
+}
+
+async function runNotionMerge(edit: InboundEdit, jobId: string, date: string): Promise<void> {
+  activityBus.log("notion-merge:start", `Merging ${edit.notionKey}`, { jobId, notionKey: edit.notionKey });
+
+  const inputPath = writeMergeInput(
+    edit.notionKey,
+    edit.lastSyncedContent,
+    edit.currentNotionContent,
+    edit.diskContent,
+    edit.sourceNodes,
+  );
+  const inputPathForWorker = toWorkerPath(inputPath);
+  const sanitizedKey = edit.notionKey.replace(/[/\\]/g, "_");
+  const resultPathForWorker = toWorkerPath(
+    path.join(CONFIG.paths.graphRoot, `.notion-merge-result-${sanitizedKey}.json`)
+  );
+  const mergeAgentPath = path.join(AGENTS_DIR, "memory-notion-merge.md");
+
+  const prompt = `Read the Notion merge instructions at ${mergeAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Merge input: ${inputPathForWorker}. Write the merge result to ${resultPathForWorker}.`;
+
+  const result = await runPipelineWorker({
+    name: `notion-merge-${sanitizedKey}`,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 5 * 60_000,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(`Merge worker exited with code ${result.exitCode}. See ${result.logFile}`);
+  }
+
+  const mergeResult = readMergeResult(edit.notionKey);
+  if (!mergeResult) {
+    throw new Error(`Merge worker did not produce result for ${edit.notionKey}`);
+  }
+
+  activityBus.log("notion-merge:complete", `Merge complete for ${edit.notionKey}: ${mergeResult.conflicts.length} conflicts`, {
+    jobId,
+    notionKey: edit.notionKey,
+    conflicts: mergeResult.conflicts.length,
+  });
+
+  for (const conflict of mergeResult.conflicts) {
+    const delta: import("./notion-inbound.js").InboundDelta = {
+      notionKey: edit.notionKey,
+      editType: "unknown",
+      sourceNodes: edit.sourceNodes,
+      observation: `Merge conflict in "${conflict.section}": ${conflict.resolution}. Human: ${conflict.humanVersion?.slice(0, 100)}. Agent: ${conflict.agentVersion?.slice(0, 100)}.`,
+      targetFile: "",
+      action: "log_conflict",
+      payload: {
+        section: conflict.section,
+        resolution: conflict.resolution,
+      },
+    };
+    applyInboundDeltas([delta]);
+  }
+}
+
+async function runNotionSync(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as { reason: string; date: string; forceFullSync?: boolean; batches?: string[]; skipInbound?: boolean; batchIndex?: number };
+
+  activityBus.log("notion-sync:start", `Notion sync starting: ${payload.reason}`, {
+    jobId: job.id,
+    date: payload.date,
+    forceFullSync: payload.forceFullSync || false,
+  });
+
+  const notionState = readNotionSyncState();
+  if (!notionState.parentPageId) {
+    activityBus.log("notion-sync:error", "Notion sync skipped — no parent page ID configured");
+    return;
+  }
+
+  if (!payload.skipInbound && !CONFIG.notionSync.skipInbound) {
+    const inboundResult = detectInboundEdits(notionState);
+    writeNotionSyncState(notionState);
+
+    if (inboundResult.edits.length > 0) {
+      activityBus.log("notion-sync:start", `Inbound detected ${inboundResult.edits.length} human edit(s) before outbound`, {
+        jobId: job.id,
+        inboundEdits: inboundResult.edits.length,
+      });
+    }
+
+    if (inboundResult.errors.length > 0) {
+      activityBus.log("notion-inbound:error", `Inbound fetch had ${inboundResult.errors.length} errors`, {
+        jobId: job.id,
+        errors: inboundResult.errors,
+      });
+    }
+  }
+
+  const diff = buildNotionDiff(notionState);
+
+  const changedItems = diff.items.filter(
+    (i) => i.classification === "new" || i.classification === "updated"
+  );
+
+  changedItems.sort((a, b) => {
+    const confA = (a.metadata?.confidence as number) ?? 1;
+    const confB = (b.metadata?.confidence as number) ?? 1;
+    return confB - confA;
+  });
+
+  if (changedItems.length === 0 && !payload.forceFullSync) {
+    activityBus.log("notion-sync:complete", "Notion sync skipped — no changes", {
+      jobId: job.id,
+      date: payload.date,
+    });
+    return;
+  }
+
+  const CHUNK_SIZE = 100;
+  const batchIndex = payload.batchIndex ?? 0;
+  const start = batchIndex * CHUNK_SIZE;
+  const chunk = changedItems.slice(start, start + CHUNK_SIZE);
+  const hasMore = start + CHUNK_SIZE < changedItems.length;
+
+  if (chunk.length === 0) {
+    notionState.lastSyncAt = new Date().toISOString();
+    writeNotionSyncState(notionState);
+    activityBus.log("notion-sync:complete", "Notion sync complete — all batches processed", {
+      jobId: job.id,
+      date: payload.date,
+      totalBatches: batchIndex,
+    });
+    return;
+  }
+
+  activityBus.log("notion-sync:start", `Notion sync batch ${batchIndex + 1}: ${chunk.length} items (${start + 1}-${start + chunk.length} of ${changedItems.length})`, {
+    jobId: job.id,
+    date: payload.date,
+    batchIndex,
+    batchSize: chunk.length,
+    totalChanged: changedItems.length,
+    hasMore,
+  });
+
+  const partialDiff: import("./notion-sync.js").NotionSyncDiff = {
+    generatedAt: diff.generatedAt,
+    items: chunk,
+    stats: {
+      new: chunk.filter((i) => i.classification === "new").length,
+      updated: chunk.filter((i) => i.classification === "updated").length,
+      archived: chunk.filter((i) => i.classification === "archived").length,
+      unchanged: 0,
+      total: chunk.length,
+    },
+    batches: [...new Set(chunk.map((i) => i.batch))],
+  };
+
+  const diffReportPath = writeDiffReport(partialDiff);
+  const diffReportPathForWorker = toWorkerPath(diffReportPath);
+  const statePathForWorker = toWorkerPath(CONFIG.paths.notionSyncState);
+  const planPathForWorker = toWorkerPath(path.join(CONFIG.paths.graphRoot, ".notion-sync-plan.json"));
+  const syncAgentPath = path.join(AGENTS_DIR, "memory-notion-sync.md");
+
+  const prompt = `Read the Notion sync instructions at ${syncAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Diff report: ${diffReportPathForWorker}. Current Notion state: ${statePathForWorker}. Write the sync plan to ${planPathForWorker}. Date: ${payload.date}. This is batch ${batchIndex + 1} of a chunked sync. Only produce a plan for the items in this diff report.`;
+
+  const result = await runPipelineWorker({
+    name: `notion-sync-b${batchIndex}-${job.id}`,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 15 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    throw new Error(`Notion sync worker exited with code ${result.exitCode}. See ${result.logFile}`);
+  }
+
+  const plan = readSyncPlan();
+  if (!plan) {
+    activityBus.log("notion-sync:error", "Notion sync worker completed without producing a sync plan");
+    return;
+  }
+
+  const syncResult = executeNotionSync(plan, notionState);
+  notionState.lastSyncAt = new Date().toISOString();
+  writeNotionSyncState(notionState);
+
+  activityBus.log("notion-sync:complete", `Notion sync batch ${batchIndex + 1} complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.archived} archived`, {
+    jobId: job.id,
+    date: payload.date,
+    batchIndex,
+    batchSize: chunk.length,
+    hasMore,
+    ...syncResult,
+  });
+
+  if (syncResult.errors.length > 0) {
+    activityBus.log("notion-sync:error", `Notion sync had ${syncResult.errors.length} errors`, {
+      jobId: job.id,
+      errors: syncResult.errors,
+    });
+  }
+
+  if (hasMore) {
+    enqueueJob({
+      type: "notion_sync",
+      payload: {
+        reason: `notion sync batch ${batchIndex + 2} for ${payload.date}`,
+        date: payload.date,
+        skipInbound: true,
+        batchIndex: batchIndex + 1,
+      },
+      triggerSource: "daemon:notion-sync-next-batch",
+      idempotencyKey: `notion-sync:${payload.date}:batch-${batchIndex + 1}`,
+    });
+    activityBus.log("notion-sync:start", `Enqueued next batch (${batchIndex + 2})`, {
+      jobId: job.id,
+      nextBatch: batchIndex + 1,
+    });
+  }
+}
+
 async function runSkillforge(job: GraphMemoryJob): Promise<void> {
   const payload = job.payload as { nodePath: string; project: string; reason: string; score: number };
   const skillforgePath = path.join(AGENTS_DIR, "memory-skillforge.md");
@@ -1340,6 +1701,8 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
       return runSkillforgeRefresh(job);
     case "bootstrap_project_doc":
       return runBootstrap(job);
+    case "notion_sync":
+      return runNotionSync(job);
   }
 }
 
@@ -1446,6 +1809,7 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
   try {
     do {
       maybeEnqueueDailyAnalysisJob();
+      maybeEnqueueNotionSync();
       maybeEnqueueAuditorFromScribeBacklog();
       maybeEnqueueObserverFromScribeBacklog();
       maybeEnqueueCompressorFromObserverBacklog();

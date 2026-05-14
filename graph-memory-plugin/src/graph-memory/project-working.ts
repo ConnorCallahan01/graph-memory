@@ -124,6 +124,7 @@ function nowIso(): string {
 }
 
 function normalizeBullet(text: string): string {
+  if (typeof text !== "string") return "";
   return text.replace(/\s+/g, " ").trim();
 }
 

@@ -16,11 +16,13 @@ import {
   fetchPipeline,
   fetchProjectWorkingFiles,
   fetchProjects,
+  fetchSkills,
+  fetchSkillContent,
   fetchStartupContext,
   fetchStatus,
   subscribeToEvents,
 } from './lib/api'
-import type { PipelineStatus, ProjectWorkingFile } from './lib/api'
+import type { PipelineStatus, ProjectWorkingFile, SkillforgeManifest } from './lib/api'
 import GraphExplorer from './components/GraphExplorer'
 
 function timeAgo(ts: string): string {
@@ -46,6 +48,9 @@ export default function App() {
   const [jobs, setJobs] = useState<PipelineJob[]>([])
   const [projectWorking, setProjectWorking] = useState<ProjectWorkingFile | null>(null)
   const [showGraph, setShowGraph] = useState(false)
+  const [skills, setSkills] = useState<SkillforgeManifest[]>([])
+  const [expandedSkill, setExpandedSkill] = useState<string | null>(null)
+  const [skillContent, setSkillContent] = useState<string | null>(null)
   const selectedNodeRef = useRef(selectedNode)
   selectedNodeRef.current = selectedNode
 
@@ -61,6 +66,7 @@ export default function App() {
   const loadAll = useCallback(async () => {
     try { const s = await fetchStatus(); setStatus(s) } catch {}
     try { const p = await fetchProjects(); setProjectsData(p) } catch {}
+    try { const s = await fetchSkills(); setSkills(s) } catch {}
   }, [])
 
   const loadGlobal = useCallback(async () => {
@@ -342,18 +348,65 @@ export default function App() {
                   <span className="pf-arrow" />
                   <div className="pf-step pf-step-global"><span className="pf-num">6</span><span className="pf-name">Compressor</span></div>
                 </div>
+                <div className="pipeline-flow-compact pipeline-flow-compact-notion">
+                  <div className="pf-step pf-step-notion"><span className="pf-num">7</span><span className="pf-name">Notion Sync</span></div>
+                </div>
                 {status?.pipelineCutoffs && status.pipelineCutoffs.length > 0 && (
                   <div className="pipeline-jobs">
                     {status.pipelineCutoffs.map((c) => (
                       <div key={c.stage} className={`pipeline-job ${c.status}`}>
                         <span className={`pipeline-job-state ${c.status === 'running' ? 'running' : c.status === 'queued' ? 'queued' : c.status === 'ready' ? 'running' : 'done'}`}>{c.status}</span>
-                        <span className="pipeline-job-type">{(c.stage || 'unknown').replace('_', ' ')}</span>
+                        <span className={`pipeline-job-type ${c.stage === 'notion_sync' ? 'pipeline-job-type-notion' : ''}`}>{(c.stage || 'unknown').replace('_', ' ')}</span>
                         <span className="pipeline-job-trigger">{c.detail}</span>
                       </div>
                     ))}
                   </div>
                 )}
               </section>
+
+              {skills.length > 0 && (
+                <section className="arch-section">
+                  <h2 className="landing-section-title">
+                    Skills
+                    <span className="landing-section-count">{skills.length}</span>
+                  </h2>
+                  <div className="skills-grid">
+                    {skills.map((skill) => (
+                      <div key={skill.skill_name} className={`skill-card${expandedSkill === skill.skill_name ? ' skill-card-expanded' : ''}`}>
+                        <div
+                          className="skill-card-header"
+                          onClick={async () => {
+                            if (expandedSkill === skill.skill_name) {
+                              setExpandedSkill(null)
+                              setSkillContent(null)
+                            } else {
+                              setExpandedSkill(skill.skill_name)
+                              setSkillContent(null)
+                              const data = await fetchSkillContent(skill.skill_name)
+                              setSkillContent(data?.content ?? 'Content not available')
+                            }
+                          }}
+                        >
+                          <span className="skill-card-name">{skill.skill_name}</span>
+                          <span className="skill-card-score">{(skill.score * 100).toFixed(0)}%</span>
+                        </div>
+                        <div className="skill-card-meta">
+                          <span className="skill-card-project">{skill.project}</span>
+                          <span className="skill-card-node">{skill.source_node}</span>
+                          {skill.refresh_count > 0 && (
+                            <span className="skill-card-refresh">{skill.refresh_count} refreshes</span>
+                          )}
+                        </div>
+                        {expandedSkill === skill.skill_name && skillContent && (
+                          <div className="skill-card-content">
+                            <pre>{skillContent}</pre>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               <section className="arch-section">
                 <h2 className="landing-section-title">Activity</h2>

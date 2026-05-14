@@ -19,8 +19,11 @@ import { runDecay } from "./pipeline/decay.js";
 import { updateManifest } from "./manifest.js";
 import { clearConsolidationPending } from "./dirty-state.js";
 import { readActiveProject } from "./project.js";
-import { countJobs } from "./pipeline/job-queue.js";
+import { countJobs, enqueueJob, hasActiveJob } from "./pipeline/job-queue.js";
 import { getRuntimeStatus, GraphMemoryRuntimeMode, saveRuntimeConfig, WorkerProvider } from "./runtime.js";
+import { readNotionSyncState, writeNotionSyncState, createEmptyNotionSyncState, consolidateNotionWorkspace } from "./pipeline/notion-sync.js";
+import { checkNtn, createPage as notionCreatePage, createDatabase, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA } from "./pipeline/notion-cli.js";
+import { setupNotionWorkspace } from "./pipeline/notion-setup.js";
 
 // --- Index cache ---
 let indexCache: { data: any[]; mtime: number } | null = null;
@@ -103,9 +106,15 @@ export async function handleGraphMemory(args: {
       return configureRuntime(args);
     case "bootstrap":
       return runBootstrapAction(args);
+    case "notion_setup":
+      return runNotionSetupAction(args);
+    case "notion_sync":
+      return runNotionSyncAction();
+    case "notion_consolidate":
+      return runNotionConsolidateAction(args);
     default:
       return {
-        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap` }],
+        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap, notion_setup, notion_sync, notion_consolidate` }],
         isError: true,
       };
   }
@@ -1114,11 +1123,100 @@ function getStatus() {
 
 // overlap, recencyBoost, projectBoost imported from scoring.ts
 
+// --- notion_setup action ---
+
+async function runNotionSetupAction(args: { parentPageId?: string; workspaceName?: string; [key: string]: any }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  try {
+    const result = setupNotionWorkspace({
+      parentPageId: args.parentPageId,
+      workspaceName: args.workspaceName,
+    });
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: JSON.stringify({ ok: true, ...result }, null, 2),
+      }],
+    };
+  } catch (err: any) {
+    return {
+      content: [{ type: "text" as const, text: `Notion setup failed: ${err.message}` }],
+      isError: true,
+    };
+  }
+}
+
+// --- notion_sync action ---
+
+async function runNotionSyncAction(): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const state = readNotionSyncState();
+  if (!state.parentPageId) {
+    return {
+      content: [{ type: "text" as const, text: "Notion sync not configured. Run notion_setup first." }],
+      isError: true,
+    };
+  }
+
+  if (hasActiveJob("notion_sync")) {
+    return {
+      content: [{ type: "text" as const, text: "A Notion sync job is already in progress." }],
+      isError: true,
+    };
+  }
+
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+
+  const { job } = enqueueJob({
+    type: "notion_sync",
+    payload: {
+      reason: `manual notion sync for ${date}`,
+      date,
+      forceFullSync: false,
+    },
+    triggerSource: "mcp:notion_sync",
+    idempotencyKey: `notion-sync:manual:${date}:${Date.now()}`,
+  });
+
+  return {
+    content: [{
+      type: "text" as const,
+      text: `Notion sync job queued: ${job.id}`,
+    }],
+  };
+}
+
+async function runNotionConsolidateAction(args: { dryRun?: boolean; [key: string]: any }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const state = readNotionSyncState();
+  if (!state.parentPageId) {
+    return {
+      content: [{ type: "text" as const, text: "Notion sync not configured. Run notion_setup first." }],
+      isError: true,
+    };
+  }
+
+  try {
+    const result = consolidateNotionWorkspace(args.dryRun);
+    const prefix = args.dryRun ? "[DRY RUN] " : "";
+    return {
+      content: [{
+        type: "text" as const,
+        text: `${prefix}Consolidation complete: ${result.mergedPages} pages merged, ${result.archivedPages} pages archived, ${result.renamedPages} pages renamed.${result.errors.length > 0 ? ` Errors: ${result.errors.join("; ")}` : ""}`,
+      }],
+    };
+  } catch (err: any) {
+    return {
+      content: [{ type: "text" as const, text: `Consolidation failed: ${err.message}` }],
+      isError: true,
+    };
+  }
+}
+
 // Zod schema for the tool (exported for MCP server registration)
 export const graphMemorySchema = {
   action: z.enum([
     "read_node", "search", "recall", "list_edges", "read_dream", "write_note",
-    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap"
+    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap", "notion_setup", "notion_sync", "notion_consolidate"
   ]).describe("The action to perform on the knowledge graph"),
   path: z.string().optional()
     .describe("Node path for read_node/list_edges/remember, dream path for read_dream, commit hash for revert"),
@@ -1180,4 +1278,10 @@ export const graphMemorySchema = {
     .describe("Target harness for bootstrap action (claude-code, codex, pi, opencode)"),
   cwd: z.string().optional()
     .describe("Project working directory for bootstrap action"),
+  parentPageId: z.string().optional()
+    .describe("Existing Notion page ID for notion_setup (omit to create new)"),
+  workspaceName: z.string().optional()
+    .describe("Workspace name for notion_setup (default: 'My Mind')"),
+  dryRun: z.boolean().optional()
+    .describe("Dry run for notion_consolidate — report what would change without making changes"),
 };

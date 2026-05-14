@@ -47,6 +47,7 @@ export function appendSessionLog(entry: {
   };
 
   const filePath = sessionLogPath(entry.project);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.appendFileSync(filePath, JSON.stringify(log) + "\n");
   return log;
 }

@@ -114,25 +114,23 @@ function createConfig() {
       maxDreamsContextTokens: 600,
       maxPriors: 30,
       maxPriorsTokens: 1500,
-      maxNodesBeforePrune: 750,
+      maxNodesBeforePrune: 1200,
       maxSessionStartTokens: 15000,
       maxPinnedTokens: 3000,
       decayHalfLifeDays: 90,
       decayArchiveThreshold: 0.20,
+      decayConfidenceFloor: 0.1,
       decayHotNodeThreshold: 0.6,
       decayRecentAccessGraceDays: 7,
       decayRecentAccessArchiveProtectionDays: 45,
       decayAccessCountArchiveProtection: 3,
+      // Category protection is intentionally minimal: value is judged by
+      // behavioral signals (hotNode / frequentlyAccessed / recentlyAccessed),
+      // not by structural category. Only genuinely structural categories that
+      // should never be mechanically archived stay here.
       decayProtectedCategories: [
-        "preferences",
-        "patterns",
-        "decisions",
         "meta",
-        "architecture",
-        "concepts",
         "people",
-        "projects",
-        "tools",
       ],
       dreamPendingMaxSessions: 5,
       dreamMinConfidence: 0.2,
@@ -214,6 +212,7 @@ function createConfig() {
       daemonLock: path.join(graphRoot, ".jobs/daemon.lock"),
       daemonState: path.join(graphRoot, ".jobs/daemon-state.json"),
       runtimeConfig: path.join(graphRoot, ".runtime-config.json"),
+      notionSyncState: path.join(graphRoot, ".notion-sync-state.json"),
       skillforgeManifests: path.join(graphRoot, ".skillforge"),
       // Prompts are bundled relative to dist/ (or src/ in dev)
       prompts: path.resolve(__dirname, "prompts"),
@@ -238,6 +237,13 @@ function createConfig() {
 
     externalInputs: {
       enabled: local.externalInputs?.enabled ?? true,
+    },
+
+    notionSync: {
+      enabled: (local as any).notionSync?.enabled ?? false,
+      syncHourLocal: (local as any).notionSync?.syncHourLocal ?? 8,
+      maxBatchSize: (local as any).notionSync?.maxBatchSize ?? 30,
+      skipInbound: (local as any).notionSync?.skipInbound ?? false,
     },
 
     /** Path to the global config pointer file */

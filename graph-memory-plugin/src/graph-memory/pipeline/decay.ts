@@ -48,6 +48,7 @@ export function runDecay(reinforcedPaths: Set<string> = new Set()): {
 
   const halfLifeDays = CONFIG.graph.decayHalfLifeDays;
   const archiveThreshold = CONFIG.graph.decayArchiveThreshold;
+  const confidenceFloor = CONFIG.graph.decayConfidenceFloor;
   const recentAccessGraceDays = CONFIG.graph.decayRecentAccessGraceDays;
   const archiveAccessProtectionDays = CONFIG.graph.decayRecentAccessArchiveProtectionDays;
   const archiveAccessCountProtection = CONFIG.graph.decayAccessCountArchiveProtection;
@@ -122,10 +123,12 @@ export function runDecay(reinforcedPaths: Set<string> = new Set()): {
           daysSince,
         });
       } else if (Math.abs(effectiveConfidence - baseConfidence) > 0.001) {
-        // Update confidence in place
+        // Update confidence in place. Non-archivable nodes still decay, but
+        // their confidence is floored so they read as low-signal rather than
+        // dropping to zero — archival is what removes them, not the floor.
         const decayedConfidence = canArchive
           ? effectiveConfidence
-          : Math.max(effectiveConfidence, archiveThreshold + 0.02);
+          : Math.max(effectiveConfidence, confidenceFloor);
         parsed.data.confidence = Math.round(decayedConfidence * 1000) / 1000;
         parsed.data.last_decay_at = now.toISOString();
         fs.writeFileSync(filePath, matter.stringify(parsed.content, parsed.data));

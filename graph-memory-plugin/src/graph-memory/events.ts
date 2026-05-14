@@ -66,7 +66,16 @@ export type ActivityEventType =
   | "system:init"
   | "system:info"
   | "system:error"
-  | "daemon:decay";
+  | "daemon:decay"
+  | "notion-sync:start"
+  | "notion-sync:complete"
+  | "notion-sync:error"
+  | "notion-inbound:start"
+  | "notion-inbound:complete"
+  | "notion-inbound:error"
+  | "notion-merge:start"
+  | "notion-merge:complete"
+  | "notion-merge:error";
 
 export interface ActivityEvent {
   type: ActivityEventType;

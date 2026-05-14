@@ -491,6 +491,11 @@ a:hover { text-decoration: underline; }
 .pipeline-job.running { background: var(--primary-subtle); }
 .pipeline-job.failed { background: var(--error-bg); }
 
+.pipeline-job-type-notion {
+  color: oklch(45% 0.12 280);
+  font-weight: 600;
+}
+
 .pipeline-job-state {
   font-size: 9px;
   font-weight: 700;
@@ -1467,6 +1472,90 @@ a:hover { text-decoration: underline; }
   font-family: var(--font-mono);
   color: var(--text-muted);
   margin-top: 2px;
+}
+
+.skills-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--space-2);
+}
+
+.skill-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.skill-card-expanded {
+  grid-column: 1 / -1;
+}
+
+.skill-card-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.skill-card-header:hover {
+  background: var(--bg-hover);
+}
+
+.skill-card-name {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.skill-card-score {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.skill-card-meta {
+  display: flex;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  font-size: 10px;
+  color: var(--text-muted);
+  padding-bottom: var(--space-2);
+}
+
+.skill-card-project {
+  color: var(--text-secondary);
+}
+
+.skill-card-node {
+  font-family: var(--font-mono);
+  color: var(--text-muted);
+}
+
+.skill-card-refresh {
+  color: var(--text-muted);
+}
+
+.skill-card-content {
+  border-top: 1px solid var(--border);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.skill-card-content pre {
+  padding: var(--space-3);
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  color: var(--text);
 }
 
 .brief-view {
@@ -3470,6 +3559,17 @@ a:hover { text-decoration: underline; }
 .pipeline-flow-compact-global {
   border-color: oklch(88% 0.02 250);
   background: oklch(98% 0.005 250);
+}
+
+.pipeline-flow-compact-notion {
+  border-color: oklch(85% 0.04 280);
+  background: oklch(97% 0.01 280);
+}
+
+.pf-step-notion .pf-num {
+  background: oklch(50% 0.12 280);
+  color: white;
+  border-color: oklch(50% 0.12 280);
 }
 
 .pf-step {

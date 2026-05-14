@@ -20,20 +20,21 @@ Legacy/reference material:
 ```text
 graph-memory-plugin/
   src/graph-memory/       # Core graph logic, runtime, inputs, pipeline
-    pipeline/             # daemon, queue, graph ops, librarian, dreamer, observer, compressor
+    pipeline/             # daemon, queue, graph ops, librarian, dreamer, observer, compressor, notion-sync
     mind/                 # v3 Layer 1: global mental model (model.json, whisper.txt, observations)
     lenses/               # v3 Layer 2: project models and whispers
     sessions/             # v3 Layer 3: session logs
     adapters/             # Harness adapters (claude-code, opencode, pi, codex)
     scripts/              # Migration and utility scripts
   src/hooks/              # Claude Code hooks
-  agents/                 # Background agent instruction files
+  agents/                 # Background agent instruction files (pipeline prompts, notion sync/merge/inbound)
   commands/               # Slash command specs (Claude Code)
   opencode-commands/      # Slash command specs (OpenCode)
   extensions/             # Plugin extension entry points
                            #   graph-memory.ts (pi), graph-memory-opencode.ts (OpenCode)
   skills/                 # Memory skill + /recall
   templates/              # Memory section templates (Claude, OpenCode, generic)
+  docs/                   # Design specs (notion-sync-spec.md)
   bin/                    # Install, runtime, Docker, and hook shell wrappers
 
 memory-dashboard/
@@ -61,6 +62,8 @@ memory-dashboard/
   .deltas/                # Scribe output
   .jobs/                  # Background queue state
   .pipeline-logs/         # Worker logs
+  .skillforge/            # Generated skill manifests
+  .notion-sync-state.json # Notion workspace sync state
   MAP.md, PRIORS.md, SOMA.md, WORKING.md, DREAMS.md  # v2 context files
 ```
 
@@ -114,6 +117,19 @@ Observer, compressor, and dreamer-v3 were built but rolled back after failing to
 - **Working Update** — extracts key files from tool traces and updates per-project working state
 - **Memory Analysis** — daily brief generation
 
+### Notion Sync Pipeline
+
+Two-way sync between graph-memory and a Notion workspace for human-readable access:
+
+- **Outbound** — mirrors graph state to Notion: knowledge nodes become wiki pages, decisions/briefs become database rows, projects get their own pages
+- **Inbound** — detects human edits in Notion and creates observations/deltas (not direct node mutations)
+- **Three-way merge** — when both sides change, human intent wins with agent info preserved as callouts
+- **Consolidation** — merges batched wiki pages into category pages, archives the rest
+- **Chunked sync** — 100 items per batch, sorted by confidence, daemon auto-enqueues next batch
+- Triggered daily by the daemon (configurable hour), or manually via `/notion-sync` command
+- Uses Notion API v2026-03-11 with data sources for property management
+- Design spec: `graph-memory-plugin/docs/notion-sync-spec.md`
+
 ## Using The Memory System
 
 The `graph_memory` tool is available in Claude Code, OpenCode, and pi sessions after installation. Common actions:
@@ -140,12 +156,20 @@ graph_memory(action="remember", path="patterns/new-pattern", gist="One-sentence 
 - `initialize` / `configure_runtime`
 - `consolidate`
 
+### Notion Sync Actions
+
+- `notion_setup` — creates Notion workspace structure (databases + wiki pages)
+- `notion_sync` — runs outbound sync (diff + plan + execute)
+- `notion_consolidate` — merges batched wiki pages into category pages
+
 ## Key Design Decisions
 
 - **Filesystem is the database** — markdown files with YAML frontmatter
 - **Keyword retrieval over curated gists** — simple and inspectable
 - **Archive with recall, not delete** — stale nodes can be resurfaced
 - **Git tracks changes** — every consolidation is recoverable
+- **Notion is human-readable mirror** — disk is agent-readable source of truth, Notion is a presentation layer
+- **Notion API v2026-03-11** — properties are managed via data sources, not databases
 
 <!-- BEGIN graph-memory plugin section -->
 ## Graph Memory

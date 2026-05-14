@@ -68,7 +68,7 @@ export interface PipelineStatus {
   completedJobs: number
   jobCounts: Record<string, Record<string, number>>
   pipelineCutoffs: Array<{
-    stage: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'observer' | 'compressor' | 'skillforge' | 'memory_analysis'
+    stage: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'observer' | 'compressor' | 'skillforge' | 'memory_analysis' | 'notion_sync'
     current: number
     threshold: number | null
     remaining: number | null
@@ -511,6 +511,12 @@ export async function fetchAuditedDeltas(): Promise<DeltaSummary[]> {
 export async function fetchSkills(): Promise<SkillforgeManifest[]> {
   const res = await fetch('/api/skills')
   if (!res.ok) return []
+  return res.json()
+}
+
+export async function fetchSkillContent(name: string): Promise<{ content: string; manifest: SkillforgeManifest } | null> {
+  const res = await fetch(`/api/skills/${encodeURIComponent(name)}/content`)
+  if (!res.ok) return null
   return res.json()
 }
 
