@@ -1,10 +1,12 @@
 {
   "name": "graph-memory",
-  "version": "2.4.0",
+  "version": "3.0.0",
   "type": "module",
   "description": "Persistent, self-evolving memory for AI agents. A Claude Code plugin, pi package, and OpenCode plugin that gives any agent a knowledge graph.",
   "license": "MIT",
-  "keywords": ["pi-package"],
+  "keywords": [
+    "pi-package"
+  ],
   "main": "dist/graph-memory/mcp-server.js",
   "bin": {
     "graph-memory": "dist/graph-memory/mcp-server.js"
@@ -46,9 +48,15 @@
     "LICENSE"
   ],
   "pi": {
-    "extensions": ["./extensions/graph-memory.ts"],
-    "skills": ["./skills"],
-    "prompts": ["./templates"]
+    "extensions": [
+      "./extensions/graph-memory.ts"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./templates"
+    ]
   },
   "peerDependencies": {
     "@mariozechner/pi-coding-agent": "*",
