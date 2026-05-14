@@ -121,15 +121,22 @@ export const GraphMemoryPlugin: Plugin = async ({ project, client, directory, wo
 
     if (_enqueueJob) {
       const currentProject = detectCurrentProject();
+      const jobPayload = {
+        snapshotPath,
+        sessionId: captureSessionId,
+        ...(currentProject ? { project: currentProject } : {}),
+      };
       _enqueueJob({
         type: "scribe",
-        payload: {
-          snapshotPath,
-          sessionId: captureSessionId,
-          ...(currentProject ? { project: currentProject } : {}),
-        },
+        payload: jobPayload,
         triggerSource: "opencode-plugin:threshold",
         idempotencyKey: `scribe:${snapshotPath}`,
+      });
+      _enqueueJob({
+        type: "observer",
+        payload: jobPayload,
+        triggerSource: "opencode-plugin:threshold",
+        idempotencyKey: `observer:${snapshotPath}`,
       });
     }
   }
@@ -256,10 +263,52 @@ export const GraphMemoryPlugin: Plugin = async ({ project, client, directory, wo
   }
 
   // ── Build context injection block ─────────────────────────────────
+  function hasV3DataOpencode(): boolean {
+    if (!_CONFIG) return false;
+    const fs = require("fs");
+    const path = require("path");
+    const mindDir = _CONFIG.paths.v3Mind;
+    if (!fs.existsSync(mindDir)) return false;
+    return fs.existsSync(path.join(mindDir, "whisper.txt"));
+  }
+
+  function buildV3ContextOpencode(): { context: string; tokensUsed: number; sources: { globalWhisper: boolean; projectWhisper: boolean; sessionLog: boolean; fallback: boolean } } {
+    try {
+      const { buildV3Context: buildV3 } = require("../dist/graph-memory/session-start-v3.js");
+      const currentProject = detectCurrentProject();
+      const result = buildV3(currentProject || "global");
+      return {
+        context: result.context,
+        tokensUsed: result.tokensUsed,
+        sources: result.sources,
+      };
+    } catch {
+      const parts: string[] = [];
+      let tokensUsed = 0;
+      const sources = { globalWhisper: false, projectWhisper: false, sessionLog: false, fallback: false };
+      return { context: parts.join("\n\n---\n\n"), tokensUsed, sources };
+    }
+  }
+
   async function buildContextBlock(userMessage?: string): Promise<string | null> {
     await ensureGraph();
     if (!_CONFIG) return null;
 
+    // v3 path: try whisper-based injection
+    if (hasV3DataOpencode()) {
+      const v3 = buildV3ContextOpencode();
+      if (!v3.sources.fallback && v3.context) {
+        const parts: string[] = [];
+        if (userMessage) {
+          const recallBlock = ambientRecall(userMessage);
+          if (recallBlock) parts.push(recallBlock);
+        }
+        parts.push(v3.context);
+        return parts.join("\n\n");
+      }
+    }
+
+    // v2 fallback
     const artifacts: Array<{ filePath: string; label: string }> = [
       { filePath: _CONFIG.paths.priors, label: "PRIORS (behavioral guidelines)" },
       { filePath: _CONFIG.paths.soma, label: "SOMA (emotional calibration)" },

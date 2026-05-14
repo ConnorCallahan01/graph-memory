@@ -19,6 +19,17 @@ const CATEGORY_COLORS: Record<string, string> = {
   patterns: 'oklch(78% 0.07 75)',
   meta: 'oklch(72% 0.05 195)',
   dreams: 'oklch(73% 0.06 350)',
+  decisions: 'oklch(72% 0.06 40)',
+  preferences: 'oklch(75% 0.06 280)',
+  concepts: 'oklch(74% 0.06 120)',
+  corrections: 'oklch(70% 0.06 15)',
+  'anti-patterns': 'oklch(68% 0.07 20)',
+  tools: 'oklch(71% 0.05 220)',
+  incidents: 'oklch(65% 0.07 0)',
+  infrastructure: 'oklch(70% 0.05 260)',
+  facts: 'oklch(72% 0.04 180)',
+  working: 'oklch(68% 0.04 60)',
+  archive: 'oklch(75% 0.03 165)',
 }
 
 const CATEGORY_DOT_COLORS: Record<string, string> = {
@@ -28,9 +39,20 @@ const CATEGORY_DOT_COLORS: Record<string, string> = {
   patterns: 'var(--cat-patterns)',
   meta: 'var(--cat-meta)',
   dreams: 'var(--cat-dreams)',
+  decisions: 'oklch(72% 0.06 40)',
+  preferences: 'oklch(75% 0.06 280)',
+  concepts: 'oklch(74% 0.06 120)',
+  corrections: 'oklch(70% 0.06 15)',
+  'anti-patterns': 'oklch(68% 0.07 20)',
+  tools: 'oklch(71% 0.05 220)',
+  incidents: 'oklch(65% 0.07 0)',
+  infrastructure: 'oklch(70% 0.05 260)',
+  facts: 'oklch(72% 0.04 180)',
+  working: 'oklch(68% 0.04 60)',
+  archive: 'oklch(75% 0.03 165)',
 }
 
-const CATEGORIES = ['people', 'projects', 'architecture', 'patterns', 'meta', 'dreams']
+const CATEGORIES = ['decisions', 'patterns', 'architecture', 'preferences', 'concepts', 'people', 'projects', 'tools', 'meta', 'anti-patterns', 'corrections', 'working', 'incidents', 'infrastructure', 'facts', 'archive', 'dreams']
 const NODE_LIST_BATCH = 80
 
 function formatTimeAgo(dateStr: string | null | undefined): string {

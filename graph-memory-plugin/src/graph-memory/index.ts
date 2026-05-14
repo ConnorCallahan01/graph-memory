@@ -43,6 +43,20 @@ export function initializeGraph() {
     `${CONFIG.paths.nodes}/_meta`,
     `${CONFIG.paths.nodes}/insight`,
     `${CONFIG.paths.nodes}/pattern`,
+
+    // v3 directories
+    CONFIG.paths.v3Mind,
+    CONFIG.paths.v3Lenses,
+    `${CONFIG.paths.v3Lenses}/_archived`,
+    CONFIG.paths.v3Sessions,
+    CONFIG.paths.v3Graph,
+    CONFIG.paths.v3GraphArchive,
+    CONFIG.paths.v3PipelineObservations,
+    ...[
+      "patterns", "anti-patterns", "decisions", "preferences",
+      "procedures", "corrections", "projects", "concepts",
+      "architecture", "people", "tools",
+    ].map((cat) => `${CONFIG.paths.v3Graph}/${cat}`),
   ];
 
   for (const dir of dirs) {

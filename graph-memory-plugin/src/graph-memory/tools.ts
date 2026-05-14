@@ -13,6 +13,8 @@ import { applyDeltas } from "./pipeline/mechanical-apply.js";
 import { buildLibrarianInput } from "./pipeline/librarian.js";
 import { buildDreamerInput } from "./pipeline/dreamer.js";
 import { fullRegenerateMAP, rebuildIndex, rebuildArchiveIndex, regenerateAllContextFiles, regenerateCoreContextFiles, validateEdgeType } from "./pipeline/graph-ops.js";
+import { addToIndex as addToV3Index, addEntryToIndex, getStats, getAntiPatterns } from "./pipeline/graph-index-v3.js";
+import { bootstrapProjectDoc, detectDocDrift, resolveDocPath } from "./pipeline/bootstrap.js";
 import { runDecay } from "./pipeline/decay.js";
 import { updateManifest } from "./manifest.js";
 import { clearConsolidationPending } from "./dirty-state.js";
@@ -91,15 +93,19 @@ export async function handleGraphMemory(args: {
       return revertGraph(args.path);
     case "consolidate":
       return runConsolidation();
+    case "compress":
+      return runCompressAction(args);
     case "resurface":
       return resurfaceNode(args.path);
     case "initialize":
       return initializeGraphAction(args.graphRoot);
     case "configure_runtime":
       return configureRuntime(args);
+    case "bootstrap":
+      return runBootstrapAction(args);
     default:
       return {
-        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, initialize, configure_runtime` }],
+        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap` }],
         isError: true,
       };
   }
@@ -207,7 +213,7 @@ function rememberNode(args: {
     id: args.path,
     title: args.title || args.path.split("/").pop(),
     gist: args.gist,
-    confidence: args.confidence ?? 0.5,
+    confidence: args.confidence ?? 0.6,
     created: now,
     updated: now,
     decay_rate: 0.05,
@@ -285,6 +291,28 @@ function updateIndexEntry(nodePath: string, fm: any) {
     }
     fs.writeFileSync(CONFIG.paths.index, JSON.stringify(index, null, 2));
     indexCache = null;
+
+    try {
+      const v3Entry = {
+        path: nodePath,
+        gist: entry.gist,
+        tags: entry.tags,
+        keywords: entry.keywords,
+        edges: entry.edges,
+        anti_edges: entry.anti_edges,
+        confidence: entry.confidence,
+        category: nodePath.split("/")[0] || "uncategorized",
+        ...(fm.project ? { project: fm.project } : {}),
+        ...(fm.pinned ? { pinned: true } : {}),
+        ...(fm.anti_pattern ? { anti_pattern: true, decay_exempt: true } : {}),
+        updated: entry.updated,
+        last_accessed: entry.last_accessed,
+        access_count: entry.access_count,
+        recall_action_count: entry.recall_action_count,
+        soma_intensity: entry.soma_intensity,
+      };
+      addEntryToIndex(v3Entry);
+    } catch { /* non-critical v3 sync */ }
   } catch { /* non-critical */ }
 }
 
@@ -554,6 +582,34 @@ async function runConsolidation(): Promise<{ content: Array<{ type: "text"; text
   };
 }
 
+// --- compress action ---
+
+function runCompressAction(args: { project?: string }) {
+  const { enqueueJob } = require("./pipeline/job-queue.js") as typeof import("./pipeline/job-queue.js");
+  const layers: Array<"global" | "project"> = args.project ? ["project"] : ["global", "project"];
+
+  const { job, created } = enqueueJob({
+    type: "compressor",
+    payload: {
+      layers,
+      ...(args.project ? { projects: [args.project] } : {}),
+      force: true,
+      reason: "manual compress via MCP action",
+    },
+    triggerSource: "mcp:compress-action",
+    idempotencyKey: "compressor:manual:" + Date.now(),
+  });
+
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({
+      success: true,
+      message: created ? "Compressor job queued." : "Compressor job already active.",
+      jobId: job.id,
+      layers,
+    }, null, 2) }],
+  };
+}
+
 // --- Existing actions ---
 
 function readNode(nodePath?: string, sessionId?: string) {
@@ -667,7 +723,7 @@ export function reinforceDreams(nodePath: string): void {
   const pendingDir = path.join(CONFIG.paths.dreams, "pending");
   if (!fs.existsSync(pendingDir)) return;
 
-  const maxConfidence = 0.55;
+  const maxConfidence = 0.65;
   const boost = 0.05;
   let reinforced = 0;
 
@@ -935,6 +991,51 @@ function configureRuntime(args: {
   };
 }
 
+function runBootstrapAction(args: { project?: string; harness?: string; cwd?: string }) {
+  const project = args.project || readActiveProject()?.name || "global";
+  if (project === "global") {
+    return {
+      content: [{ type: "text" as const, text: "Cannot bootstrap doc for 'global' project. Specify a project name." }],
+      isError: true,
+    };
+  }
+
+  const harness = args.harness || "opencode";
+  const cwd = args.cwd || process.cwd();
+
+  const result = bootstrapProjectDoc(project, harness, cwd);
+  const drift = detectDocDrift(project, cwd, harness);
+
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify({
+      success: true,
+      filePath: result.filePath,
+      created: result.created,
+      sections: result.sections,
+      drift: drift.drifted ? { missing: drift.missing } : null,
+    }, null, 2) }],
+  };
+}
+
+function getV3Status(): Record<string, any> {
+  try {
+    const stats = getStats();
+    const antiPatterns = getAntiPatterns();
+    return {
+      graphNodes: stats.totalNodes,
+      categories: stats.categories,
+      antiPatterns: {
+        total: antiPatterns.length,
+        global: antiPatterns.filter((e: any) => !e.project).length,
+        project: antiPatterns.filter((e: any) => e.project).length,
+      },
+      projects: stats.projects,
+    };
+  } catch {
+    return { available: false };
+  }
+}
+
 function getStatus() {
   const initialized = isGraphInitialized();
   const mapExists = fs.existsSync(CONFIG.paths.map);
@@ -1005,6 +1106,7 @@ function getStatus() {
     consolidationPending,
     runtime,
     warnings,
+    v3: getV3Status(),
   };
 
   return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
@@ -1016,7 +1118,7 @@ function getStatus() {
 export const graphMemorySchema = {
   action: z.enum([
     "read_node", "search", "recall", "list_edges", "read_dream", "write_note",
-    "remember", "resurface", "status", "history", "revert", "consolidate", "initialize", "configure_runtime"
+    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap"
   ]).describe("The action to perform on the knowledge graph"),
   path: z.string().optional()
     .describe("Node path for read_node/list_edges/remember, dream path for read_dream, commit hash for revert"),
@@ -1074,4 +1176,8 @@ export const graphMemorySchema = {
     .describe("Container memory limit for configure_runtime"),
   cpuLimit: z.string().optional()
     .describe("Container CPU limit for configure_runtime"),
+  harness: z.string().optional()
+    .describe("Target harness for bootstrap action (claude-code, codex, pi, opencode)"),
+  cwd: z.string().optional()
+    .describe("Project working directory for bootstrap action"),
 };

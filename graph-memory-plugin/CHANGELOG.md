@@ -1,5 +1,133 @@
 # Changelog
 
+## 2026-05-14 — Mental Model Architecture + Pipeline Improvements
+
+### Mental Model System (folded into v2 pipeline)
+
+Replaced `PRIORS.md` + `SOMA.md` with a structured JSON mental model. The v2 pipeline (`scribe → auditor → librarian → dreamer`) remains the active pipeline, but session-start injection now reads from the mental model instead of the old two-file approach.
+
+**Global model** (`mind/model.json`):
+- Cognitive style, decision patterns, preferences, guardrails, emotional profile, relational notes
+- Companion `mind/whisper.txt` — pre-generated ~300-token injection paragraph
+- `mind/observations.jsonl` — append-only observation feed
+
+**Project models** (`lenses/{project}/`):
+- Per-project tech stack, conventions, procedures, guardrails, active work, open threads
+- Per-project `whisper.txt` and `observations.jsonl`
+- Archivable and restorable via lens manager
+
+**Session logs** (`sessions/{project}.jsonl`):
+- Per-session records of shipped work, decisions, blocked items, open threads, next-session hints
+- Auto-compaction: full detail < 3 days, summary 3–7 days, decisions-only 7–30 days, pruned > 30 days
+
+### Merged Session Start
+
+Session-start now uses a tiered injection strategy:
+
+1. **If `GRAPH_MEMORY_V3=1` and whisper data exists** — injects from compressed whispers (~1,100 tokens total: global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150)
+2. **Otherwise (default)** — injects from `mind/model.json` + MAP + WORKING + PINNED + DREAMS, replacing the old PRIORS/SOMA with the structured mental model
+
+Both paths share the same underlying data (`mind/model.json`). The v3 whisper path is a further compression that can be enabled when ready.
+
+### v3 Pipeline Infrastructure (code present, not active by default)
+
+The observer, compressor, and dreamer-v3 pipeline stages were built but rolled back after the v3 pipeline failed to validate in production (worker spawn storms, compressor never triggered, unprocessed observations). The v2 pipeline with improved prompts is the proven path.
+
+- **Observer** — single LLM pass producing observations, session logs, and node upserts. Present in code, gated behind `GRAPH_MEMORY_V3=1`.
+- **Compressor** — folds observations into mental models, generates whisper paragraphs. Present in code, not active.
+- **Dreamer V3** — creative recombination against compressed models. Present in code, not active.
+
+These stages can be re-enabled by setting `GRAPH_MEMORY_V3=1` when the v3 pipeline is validated.
+
+### Pipeline Prompt Improvements
+
+All four v2 pipeline agent prompts were rewritten:
+- **Scribe**: Captures "true memory" (evolving opinions, frustrations, contradictions, half-formed ideas) not just hard facts. Added `mark_stale` delta type.
+- **Auditor**: Added stale/contradictory node detection as highest priority. Added noise/bloat candidates section.
+- **Librarian**: Prune-over-preserve philosophy. Handles stale nodes as second priority (after PRIORS compression). Rewrite-over-append approach.
+- **Dreamer**: Unchanged (already good).
+
+### Harness Adapter System
+
+- `types.ts` — `HarnessAdapter` interface with `HarnessType`, `AdapterConfig`, `SessionStartResult`
+- `claude-code.ts`, `opencode.ts`, `pi.ts`, `codex.ts` — harness-specific adapters
+- `factory.ts` — adapter instantiation
+- `shared.ts` — shared adapter logic
+
+Each adapter declares capabilities (hooks, plugin events, MCP) and project doc filename.
+
+### Project Document Bootstrapping
+
+New `pipeline/bootstrap.ts` auto-generates project docs (CLAUDE.md / AGENT.md) from mental models:
+
+- Reads global model, project model, observations, anti-patterns
+- Generates structured sections (mental model, inject flow, project working)
+- Preserves custom `<!-- custom start -->` / `<!-- custom end -->` sections
+- Detects drift between current model state and existing doc content
+
+### v3 Graph Index
+
+New `pipeline/graph-index-v3.ts` replaces flat JSON array with Map-keyed structure:
+
+- O(1) path lookups, category and project filtering
+- Incremental add/remove without full rebuild
+- Lazy load with mtime-based cache invalidation
+- Anti-pattern queries for guardrail injection
+
+### Key Files in WORKING Handoff
+
+`project-working.ts` now extracts `keyFiles` from tool traces — files that were edited or created during a session. These appear in a new `## Files` section of per-project WORKING handoff, priming the next session with the most relevant file paths.
+
+### YAML Frontmatter Repair
+
+New `pipeline/yaml-repair.ts` handles real-world malformation patterns in node frontmatter:
+
+- Unquoted colons in title/gist values
+- Duplicated mapping keys
+- Extra/missing trailing quotes on date values
+- Bad indentation
+
+### Dashboard Redesign
+
+Complete dashboard overhaul (`memory-dashboard/`):
+
+- **2-column layout** — main content + persistent activity rail with real-time SSE
+- **Architecture view** — mental model inspector with global model, project models, whisper preview, inject flow diagram
+- **Session replay** — per-session event timeline with tool traces and delta previews
+- **Memory health** — 4-metric health grid (node count, avg confidence, coverage, staleness)
+- **Dream actions** — accept/reject buttons for pending dream fragments
+- **Node editing** — inline edit form for gist, content, confidence, tags
+- **Pipeline status** — compact flow diagram showing v2 + v3 pipeline state
+- New API endpoints: `/api/model`, `/api/startup-context`, `/api/project-working`, `/api/events` (SSE)
+- New job types in dashboard: `observer`, `compressor`, `dreamer_v3`, `bootstrap_project_doc`
+
+### Pipeline Improvements
+
+- Pipeline concurrency raised from 1 to 4 (`daemonConcurrency: 4`)
+- Stale worker reaping at 5 minutes (was implicit)
+- Session cap at 5 with replace-over-append merge (was append-only)
+- New job types: `observer`, `compressor`, `bootstrap_project_doc`, `dreamer_v3`
+
+### Migration Script
+
+New `scripts/migrate-v2-to-v3.ts` for migrating existing v2 graph data:
+
+- Reads all active nodes, high-confidence ones feed into global and project models
+- Generates whisper paragraphs from model content
+- Builds v3 graph index from node files
+- Supports dry-run (`npx tsx ...`) and apply (`--apply`) modes
+
+### Other Changes
+
+- **Impeccable skill** bundled (`.agents/skills/impeccable/`) with 30+ design reference docs and live browser tooling
+- **Agent instructions** updated: scribe, auditor, librarian, dreamer v3, observer, compressor, working-updater
+- **OpenCode extension** updated for v3 adapter support
+- **Pi extension** updated for v3 adapter support
+- `SPEC.md` and `AGENT.md` added for architecture documentation
+- `skills-lock.json` for reproducible skill installations
+
+---
+
 ## 2026-05-10 — Phase 5: Automation & Project Isolation
 
 ### Automatic decay on daemon tick

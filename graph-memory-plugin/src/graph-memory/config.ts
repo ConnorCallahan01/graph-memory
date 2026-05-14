@@ -81,18 +81,27 @@ function createConfig() {
   const local = loadLocalConfig(graphRoot);
   const inferredTimeZone = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
+  const v3Enabled = process.env.GRAPH_MEMORY_V3 === "1";
+
   return {
+    v3: {
+      enabled: v3Enabled,
+      shadow: v3Enabled && process.env.GRAPH_MEMORY_V3_SHADOW !== "0",
+    },
+
     session: {
       scribeInterval: 10,
       librarianDeltaThreshold: 20,
-      auditScribeFileThreshold: 5,
+      auditScribeFileThreshold: 3,
+      observerScribeThreshold: 3,
+      compressorObserverThreshold: 5,
       idleTimeoutMs: 120_000,
       workerTimeoutMs: 300_000,
       maxSessionMessages: 200,
       minSessionMessages: 3,
       pipelineCooldownMs: 300_000,
       daemonPollMs: 30_000,
-      daemonConcurrency: 3,
+      daemonConcurrency: 4,
       dailyAnalysisHourLocal: 7,
       dailyAnalysisTimeZone: inferredTimeZone,
     },
@@ -208,6 +217,15 @@ function createConfig() {
       skillforgeManifests: path.join(graphRoot, ".skillforge"),
       // Prompts are bundled relative to dist/ (or src/ in dev)
       prompts: path.resolve(__dirname, "prompts"),
+
+      // v3 paths (Layer 1-4)
+      v3Mind: path.join(graphRoot, "mind"),
+      v3Lenses: path.join(graphRoot, "lenses"),
+      v3Sessions: path.join(graphRoot, "sessions"),
+      v3Graph: path.join(graphRoot, "graph"),
+      v3GraphIndex: path.join(graphRoot, "graph", ".index.json"),
+      v3GraphArchive: path.join(graphRoot, "graph", ".archive"),
+      v3PipelineObservations: path.join(graphRoot, ".pipeline", "observations"),
     },
 
     git: {

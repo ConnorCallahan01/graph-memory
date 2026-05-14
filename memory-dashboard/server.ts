@@ -11,7 +11,7 @@ const app = express()
 const PORT = Number.parseInt(process.env.MEMORY_DASHBOARD_API_PORT || process.env.PORT || '3001', 10)
 
 type JobState = 'queued' | 'running' | 'done' | 'failed'
-type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh'
+type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc'
 
 interface RuntimeConfig {
   mode?: 'manual' | 'docker'
@@ -84,6 +84,8 @@ interface PipelineCutoffStatus {
 
 const SCRIBE_INTERVAL = 10
 const AUDITOR_SCRIBE_THRESHOLD = 5
+const OBSERVER_SCRIBE_THRESHOLD = 3
+const COMPRESSOR_OBSERVER_THRESHOLD = 5
 const DAILY_ANALYSIS_HOUR_LOCAL = 7
 
 const COMMON_BIN_DIRS = [
@@ -546,9 +548,13 @@ function readAllJobs(graphRoot = getGraphRoot()) {
     auditor: { queued: 0, running: 0, done: 0, failed: 0 },
     librarian: { queued: 0, running: 0, done: 0, failed: 0 },
     dreamer: { queued: 0, running: 0, done: 0, failed: 0 },
+    dreamer_v3: { queued: 0, running: 0, done: 0, failed: 0 },
     memory_analysis: { queued: 0, running: 0, done: 0, failed: 0 },
     skillforge: { queued: 0, running: 0, done: 0, failed: 0 },
     skillforge_refresh: { queued: 0, running: 0, done: 0, failed: 0 },
+    observer: { queued: 0, running: 0, done: 0, failed: 0 },
+    compressor: { queued: 0, running: 0, done: 0, failed: 0 },
+    bootstrap_project_doc: { queued: 0, running: 0, done: 0, failed: 0 },
   }
 
   for (const state of Object.keys(jobs) as JobState[]) {
@@ -606,6 +612,30 @@ function countCompletedProjectScopedScribes(jobs: ReturnType<typeof readAllJobs>
     .length
 }
 
+function countCompletedScribesSinceLastObserver(jobs: ReturnType<typeof readAllJobs>) {
+  const latestObserverMs = jobs.done
+    .filter((job) => job.type === 'observer')
+    .map((job) => latestJobTime(job))
+    .sort((a, b) => b - a)[0] || 0
+
+  return jobs.done
+    .filter((job) => job.type === 'scribe')
+    .filter((job) => latestJobTime(job) > latestObserverMs)
+    .length
+}
+
+function countCompletedObserversSinceLastCompressor(jobs: ReturnType<typeof readAllJobs>) {
+  const latestCompressorMs = jobs.done
+    .filter((job) => job.type === 'compressor')
+    .map((job) => latestJobTime(job))
+    .sort((a, b) => b - a)[0] || 0
+
+  return jobs.done
+    .filter((job) => job.type === 'observer')
+    .filter((job) => latestJobTime(job) > latestCompressorMs)
+    .length
+}
+
 function countSkillforgeManifests(graphRoot = getGraphRoot()): number {
   const dir = getPaths(graphRoot).skillforge
   if (!existsSync(dir)) return 0
@@ -622,6 +652,8 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
   const bufferCount = readBufferCount(graphRoot)
   const activeDeltaFiles = countActiveDeltaFiles(graphRoot)
   const completedScribesSinceAuditor = countCompletedScribesSinceLastAuditor(jobs)
+  const completedScribesSinceObserver = countCompletedScribesSinceLastObserver(jobs)
+  const completedObserversSinceCompressor = countCompletedObserversSinceLastCompressor(jobs)
   const completedProjectScopedScribes = countCompletedProjectScopedScribes(jobs)
   const hasProjectWorkingHandoffs = listProjectWorkingFiles(graphRoot).some((file) => file.sessionCount > 0)
   const scribeState = hasJobInFlight(jobs, 'scribe')
@@ -629,6 +661,8 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
   const auditorState = hasJobInFlight(jobs, 'auditor')
   const librarianState = hasJobInFlight(jobs, 'librarian')
   const dreamerState = hasJobInFlight(jobs, 'dreamer')
+  const observerState = hasJobInFlight(jobs, 'observer')
+  const compressorState = hasJobInFlight(jobs, 'compressor')
   const analysisState = hasJobInFlight(jobs, 'memory_analysis')
   const skillforgeState = hasJobInFlight(jobs, 'skillforge')
   const skillforgeRefreshState = hasJobInFlight(jobs, 'skillforge_refresh')
@@ -712,6 +746,30 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
           : jobs.done.some((job) => job.type === 'librarian')
             ? 'Dreamer runs after each fresh librarian completion.'
             : 'No fresh librarian pass yet, so dreamer is idle.',
+    },
+    {
+      stage: 'observer',
+      current: completedScribesSinceObserver,
+      threshold: OBSERVER_SCRIBE_THRESHOLD,
+      remaining: Math.max(0, OBSERVER_SCRIBE_THRESHOLD - completedScribesSinceObserver),
+      status: observerState || (completedScribesSinceObserver >= OBSERVER_SCRIBE_THRESHOLD ? 'ready' : 'counting'),
+      detail: observerState
+        ? `Observer is ${observerState} on cross-project pattern extraction.`
+        : completedScribesSinceObserver >= OBSERVER_SCRIBE_THRESHOLD
+          ? `${completedScribesSinceObserver} scribes accumulated. Observer ready to extract cross-project patterns.`
+          : `${completedScribesSinceObserver} of ${OBSERVER_SCRIBE_THRESHOLD} scribes since last observer. ${Math.max(0, OBSERVER_SCRIBE_THRESHOLD - completedScribesSinceObserver)} more needed.`,
+    },
+    {
+      stage: 'compressor',
+      current: completedObserversSinceCompressor,
+      threshold: COMPRESSOR_OBSERVER_THRESHOLD,
+      remaining: Math.max(0, COMPRESSOR_OBSERVER_THRESHOLD - completedObserversSinceCompressor),
+      status: compressorState || (completedObserversSinceCompressor >= COMPRESSOR_OBSERVER_THRESHOLD ? 'ready' : 'counting'),
+      detail: compressorState
+        ? `Compressor is ${compressorState} updating the global mental model.`
+        : completedObserversSinceCompressor >= COMPRESSOR_OBSERVER_THRESHOLD
+          ? `${completedObserversSinceCompressor} observers accumulated. Compressor ready to update mental model + graph maintenance.`
+          : `${completedObserversSinceCompressor} of ${COMPRESSOR_OBSERVER_THRESHOLD} observers since last compressor. ${Math.max(0, COMPRESSOR_OBSERVER_THRESHOLD - completedObserversSinceCompressor)} more needed.`,
     },
     {
       stage: 'skillforge',
@@ -1766,7 +1824,7 @@ app.get('/api/logs/:filename(*)', (req, res) => {
 })
 
 const clients = new Set<express.Response>()
-let debounceTimer: ReturnType<typeof setTimeout> | null = null
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 app.get('/api/events', (_req, res) => {
   if (clients.size >= 20) {
@@ -1784,12 +1842,480 @@ app.get('/api/events', (_req, res) => {
   _req.on('close', () => clients.delete(res))
 })
 
+// ── v3 API Endpoints ──────────────────────────────────────────────────────────
+
+app.get('/api/projects', (_req, res) => {
+  try {
+    const paths = getPaths()
+    const index = existsSync(paths.index) ? JSON.parse(readFileSync(paths.index, 'utf-8')) : []
+    const byProject = new Map<string, { nodeCount: number; lastUpdated: string | null; categories: Record<string, number>; nodePaths: string[] }>()
+
+    for (const entry of index) {
+      const project = entry.project || null
+      if (!project) continue
+      const existing = byProject.get(project) || { nodeCount: 0, lastUpdated: null, categories: {} as Record<string, number>, nodePaths: [] as string[] }
+      existing.nodeCount++
+      existing.nodePaths.push(entry.path)
+      const cat = entry.path?.split('/')[0] || 'unknown'
+      existing.categories[cat] = (existing.categories[cat] || 0) + 1
+      const updated = entry.updated || entry.created
+      if (updated && (!existing.lastUpdated || updated > existing.lastUpdated)) {
+        existing.lastUpdated = updated
+      }
+      byProject.set(project, existing)
+    }
+
+    const workingFiles = listProjectWorkingFiles()
+
+    const projects = Array.from(byProject.entries()).map(([name, data]) => {
+      const working = workingFiles.find(w => w.project === name)
+      return {
+        name,
+        nodeCount: data.nodeCount,
+        lastUpdated: data.lastUpdated,
+        categories: data.categories,
+        hasWorking: !!working,
+        workingPreview: working?.content?.slice(0, 200) || null,
+        workingUpdatedAt: working?.updatedAt || null,
+        sessionCount: working?.sessionCount || 0,
+      }
+    }).sort((a, b) => b.nodeCount - a.nodeCount)
+
+    const globalNodes = index.filter((e: any) => !e.project)
+    const globalCategories: Record<string, number> = {}
+    for (const entry of globalNodes) {
+      const cat = entry.path?.split('/')[0] || 'unknown'
+      globalCategories[cat] = (globalCategories[cat] || 0) + 1
+    }
+
+    res.json({
+      projects,
+      global: {
+        nodeCount: globalNodes.length,
+        categories: globalCategories,
+      },
+      totalNodes: index.length,
+      totalProjects: projects.length,
+    })
+  } catch {
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+app.get('/api/v3/model', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const modelPath = join(graphRoot, 'mind/model.json')
+  if (!existsSync(modelPath)) {
+    res.json({ model: null })
+    return
+  }
+  try {
+    res.json(JSON.parse(readFileSync(modelPath, 'utf-8')))
+  } catch {
+    res.json({ model: null })
+  }
+})
+
+app.get('/api/v3/whisper', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const whisperPath = join(graphRoot, 'mind/whisper.txt')
+  if (!existsSync(whisperPath)) {
+    res.json({ whisper: null, tokens: 0 })
+    return
+  }
+  const text = readFileSync(whisperPath, 'utf-8').trim()
+  res.json({ whisper: text, tokens: Math.ceil(text.length / 4) })
+})
+
+app.get('/api/v3/lenses', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const lensesDir = join(graphRoot, 'lenses')
+  if (!existsSync(lensesDir)) {
+    res.json([])
+    return
+  }
+  const lenses: Array<{
+    project: string
+    hasModel: boolean
+    hasWhisper: boolean
+    observationCount: number
+    lastCompressorRun: string
+    model?: Record<string, unknown>
+    whisper?: string
+  }> = []
+  for (const entry of readdirSync(lensesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name.startsWith('_') || entry.name.startsWith('.')) continue
+    const dir = join(lensesDir, entry.name)
+    const modelFile = join(dir, 'model.json')
+    const whisperFile = join(dir, 'whisper.txt')
+    const obsFile = join(dir, 'observations.jsonl')
+
+    let model: Record<string, unknown> | null = null
+    let lastCompressorRun = ''
+    let observationCount = 0
+
+    if (existsSync(modelFile)) {
+      try {
+        const parsed = JSON.parse(readFileSync(modelFile, 'utf-8'))
+        model = parsed.model || null
+        lastCompressorRun = parsed.lastCompressorRun || ''
+      } catch { /* skip */ }
+    }
+
+    if (existsSync(obsFile)) {
+      const content = readFileSync(obsFile, 'utf-8').trim()
+      observationCount = content.split('\n').filter(Boolean).length
+    }
+
+    let whisper: string | undefined
+    if (existsSync(whisperFile)) {
+      whisper = readFileSync(whisperFile, 'utf-8').trim() || undefined
+    }
+
+    lenses.push({
+      project: entry.name,
+      hasModel: existsSync(modelFile),
+      hasWhisper: existsSync(whisperFile),
+      observationCount,
+      lastCompressorRun,
+      ...(model ? { model } : {}),
+      ...(whisper ? { whisper } : {}),
+    })
+  }
+  res.json(lenses)
+})
+
+app.get('/api/v3/lens/:project', (req, res) => {
+  const graphRoot = getGraphRoot()
+  const lensDir = join(graphRoot, 'lenses', req.params.project)
+  if (!existsSync(lensDir)) {
+    res.status(404).json({ error: 'Lens not found' })
+    return
+  }
+  const modelFile = join(lensDir, 'model.json')
+  const whisperFile = join(lensDir, 'whisper.txt')
+  const obsFile = join(lensDir, 'observations.jsonl')
+
+  let model = null
+  let observations: Array<Record<string, unknown>> = []
+
+  if (existsSync(modelFile)) {
+    try { model = JSON.parse(readFileSync(modelFile, 'utf-8')) } catch { /* skip */ }
+  }
+  if (existsSync(obsFile)) {
+    try {
+      observations = readFileSync(obsFile, 'utf-8')
+        .trim().split('\n').filter(Boolean)
+        .map(line => JSON.parse(line))
+    } catch { /* skip */ }
+  }
+
+  res.json({
+    project: req.params.project,
+    model,
+    whisper: existsSync(whisperFile) ? readFileSync(whisperFile, 'utf-8').trim() : null,
+    observations,
+  })
+})
+
+app.get('/api/v3/sessions/:project', (req, res) => {
+  const graphRoot = getGraphRoot()
+  const sessionsFile = join(graphRoot, 'sessions', `${req.params.project}.jsonl`)
+  if (!existsSync(sessionsFile)) {
+    res.json([])
+    return
+  }
+  try {
+    const sessions = readFileSync(sessionsFile, 'utf-8')
+      .trim().split('\n').filter(Boolean)
+      .map(line => JSON.parse(line))
+    res.json(sessions)
+  } catch {
+    res.json([])
+  }
+})
+
+app.get('/api/v3/observations', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const obsDir = join(graphRoot, '.pipeline', 'observations')
+  if (!existsSync(obsDir)) {
+    res.json({ global: 0, projects: {} })
+    return
+  }
+
+  const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
+  let globalCount = 0
+  if (existsSync(globalObsFile)) {
+    globalCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).length
+  }
+
+  const projectObs: Record<string, number> = {}
+  const lensesDir = join(graphRoot, 'lenses')
+  if (existsSync(lensesDir)) {
+    for (const entry of readdirSync(lensesDir, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name.startsWith('_')) continue
+      const obsFile = join(lensesDir, entry.name, 'observations.jsonl')
+      if (existsSync(obsFile)) {
+        projectObs[entry.name] = readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).length
+      }
+    }
+  }
+
+  res.json({ global: globalCount, projects: projectObs })
+})
+
+app.get('/api/v3/graph', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const indexPath = join(graphRoot, 'graph', '.index.json')
+  if (!existsSync(indexPath)) {
+    res.json({ entries: {}, categories: {}, projects: {}, totalNodes: 0, antiPatterns: 0 })
+    return
+  }
+  try {
+    const index = JSON.parse(readFileSync(indexPath, 'utf-8'))
+    const entries = index.entries || {}
+    const nodes = Object.values(entries) as Array<Record<string, unknown>>
+
+    const elements: Array<Record<string, unknown>> = []
+    for (const node of nodes) {
+      elements.push({
+        data: {
+          id: node.path,
+          label: (node.path as string).split('/').pop(),
+          category: node.category,
+          confidence: node.confidence,
+          gist: (node.gist as string || '').slice(0, 80),
+          anti_pattern: node.anti_pattern || false,
+        },
+      })
+      for (const edge of (node.edges as Array<Record<string, unknown>> || [])) {
+        elements.push({
+          data: {
+            id: `${node.path}->${edge.target}`,
+            source: node.path,
+            target: edge.target,
+            type: edge.type,
+            weight: edge.weight,
+          },
+        })
+      }
+    }
+
+    const categories: Record<string, number> = {}
+    for (const cat of Object.keys(index.categories || {})) {
+      categories[cat] = (index.categories[cat] as unknown[]).length
+    }
+
+    const projects: Record<string, number> = {}
+    for (const proj of Object.keys(index.projects || {})) {
+      projects[proj] = (index.projects[proj] as unknown[]).length
+    }
+
+    res.json({
+      elements,
+      totalNodes: nodes.length,
+      antiPatterns: nodes.filter(n => n.anti_pattern || n.category === 'anti-patterns').length,
+      categories,
+      projects,
+      builtAt: index.builtAt,
+    })
+  } catch {
+    res.json({ entries: {}, categories: {}, projects: {}, totalNodes: 0, antiPatterns: 0 })
+  }
+})
+
+app.get('/api/v3/node/:path(*)', (req, res) => {
+  const graphRoot = getGraphRoot()
+  const nodePath = join(graphRoot, 'graph', `${req.params['path']}.md`)
+  if (!existsSync(nodePath)) {
+    res.status(404).json({ error: 'Node not found' })
+    return
+  }
+  try {
+    const raw = readFileSync(nodePath, 'utf-8')
+    const parsed = matter(raw)
+    res.json({
+      path: req.params['path'],
+      frontmatter: parsed.data,
+      content: parsed.content.trim(),
+    })
+  } catch {
+    res.status(500).json({ error: 'Failed to parse node' })
+  }
+})
+
+app.get('/api/v3/status', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const mindDir = join(graphRoot, 'mind')
+  const hasMind = existsSync(mindDir) && existsSync(join(mindDir, 'whisper.txt'))
+  const indexPath = join(graphRoot, 'graph', '.index.json')
+
+  let graphStats = { totalNodes: 0, antiPatterns: 0, categories: {} as Record<string, number>, projects: {} as Record<string, number> }
+  if (existsSync(indexPath)) {
+    try {
+      const index = JSON.parse(readFileSync(indexPath, 'utf-8'))
+      const entries = Object.values(index.entries || {}) as Array<Record<string, unknown>>
+      graphStats = {
+        totalNodes: entries.length,
+        antiPatterns: entries.filter(n => n.anti_pattern || n.category === 'anti-patterns').length,
+        categories: Object.fromEntries(Object.entries(index.categories || {}).map(([k, v]) => [k, (v as unknown[]).length])),
+        projects: Object.fromEntries(Object.entries(index.projects || {}).map(([k, v]) => [k, (v as unknown[]).length])),
+      }
+    } catch { /* skip */ }
+  }
+
+  const lensesDir = join(graphRoot, 'lenses')
+  let lensCount = 0
+  if (existsSync(lensesDir)) {
+    lensCount = readdirSync(lensesDir, { withFileTypes: true })
+      .filter(e => e.isDirectory() && !e.name.startsWith('_') && !e.name.startsWith('.')).length
+  }
+
+  res.json({
+    initialized: existsSync(join(graphRoot, 'graph')) || existsSync(join(graphRoot, 'MAP.md')),
+    v3: {
+      hasGlobalWhisper: hasMind,
+      lensCount,
+      ...graphStats,
+    },
+    v2: {
+      hasMap: existsSync(join(graphRoot, 'MAP.md')),
+      nodeCount: existsSync(join(graphRoot, 'nodes')) ? countNodes(join(graphRoot, 'nodes')) : 0,
+    },
+  })
+})
+
+app.get('/api/v3/active-sessions', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const bufferDir = join(graphRoot, 'buffer')
+  const sessionsDir = join(graphRoot, '.sessions')
+  if (!existsSync(bufferDir)) { res.json([]); return }
+
+  const activeSessions: Array<Record<string, unknown>> = []
+  const bufferFiles = readdirSync(bufferDir).filter(f => f.startsWith('conversation-') && f.endsWith('.jsonl'))
+
+  for (const bf of bufferFiles) {
+    const filePath = join(bufferDir, bf)
+    const sessionId = bf.replace('conversation-', '').replace('.jsonl', '')
+    try {
+      const lines = readFileSync(filePath, 'utf-8').trim().split('\n').filter(Boolean)
+      const first = JSON.parse(lines[0])
+      const last = JSON.parse(lines[lines.length - 1])
+      const project = first.project || last.project || null
+
+      const sessionDir = join(sessionsDir, sessionId)
+      let hasAssistantTrace = false
+      let hasToolTrace = false
+      if (existsSync(sessionDir)) {
+        hasAssistantTrace = existsSync(join(sessionDir, 'assistant-trace.jsonl'))
+        hasToolTrace = existsSync(join(sessionDir, 'tool-trace.jsonl'))
+      }
+
+      activeSessions.push({
+        sessionId,
+        project,
+        messageCount: lines.length,
+        startedAt: first.timestamp,
+        lastActivity: last.timestamp,
+        hasAssistantTrace,
+        hasToolTrace,
+      })
+    } catch {}
+  }
+
+  activeSessions.sort((a, b) => Date.parse(b.lastActivity as string) - Date.parse(a.lastActivity as string))
+  res.json(activeSessions)
+})
+
+app.get('/api/v3/pipeline', (_req, res) => {
+  const graphRoot = getGraphRoot()
+  const jobsDir = join(graphRoot, '.jobs')
+
+  let daemonState: Record<string, unknown> | null = null
+  const daemonStatePath = join(jobsDir, 'daemon-state.json')
+  if (existsSync(daemonStatePath)) {
+    try { daemonState = JSON.parse(readFileSync(daemonStatePath, 'utf-8')) } catch {}
+  }
+
+  const recentJobs: Array<Record<string, unknown>> = []
+  const states: Array<'done' | 'failed' | 'running' | 'queued'> = ['running', 'queued', 'failed', 'done']
+  for (const state of states) {
+    const dir = join(jobsDir, state)
+    if (!existsSync(dir)) continue
+    const files = readdirSync(dir).filter(f => f.endsWith('.json'))
+    for (const file of state === 'done' ? files.slice(-20) : files) {
+      try {
+        const job = JSON.parse(readFileSync(join(dir, file), 'utf-8'))
+        if (!job || typeof job !== 'object') continue
+        recentJobs.push({
+          id: job.id,
+          type: job.type,
+          state,
+          project: job.payload?.project || null,
+          createdAt: job.createdAt,
+          startedAt: job.startedAt,
+          completedAt: job.completedAt,
+          attempt: job.attempt,
+          lastError: job.lastError || null,
+          triggerSource: job.triggerSource || null,
+        })
+      } catch {}
+    }
+  }
+  recentJobs.sort((a, b) => {
+    const ta = Date.parse((a.startedAt || a.createdAt) as string) || 0
+    const tb = Date.parse((b.startedAt || b.createdAt) as string) || 0
+    return tb - ta
+  })
+
+  const completedObservers = recentJobs
+    .filter(j => j.type === 'observer' && j.state === 'done')
+  const completedCompressors = recentJobs
+    .filter(j => j.type === 'compressor' && j.state === 'done')
+  const lastCompressorAt = completedCompressors.length > 0
+    ? Date.parse((completedCompressors[0].completedAt as string) || '')
+    : 0
+  const observersSinceCompressor = completedObservers
+    .filter(j => Date.parse((j.completedAt as string) || '') > lastCompressorAt)
+    .length
+
+  const obsDir = join(graphRoot, '.pipeline', 'observations')
+  let pendingObservations = 0
+  if (existsSync(obsDir)) {
+    pendingObservations = readdirSync(obsDir).filter(f => f.endsWith('.json')).length
+  }
+
+  res.json({
+    daemon: daemonState ? {
+      running: daemonState.running,
+      pid: daemonState.pid,
+      updatedAt: daemonState.updatedAt,
+    } : null,
+    observersSinceCompressor,
+    compressorThreshold: 5,
+    pendingObservations,
+    recentJobs: recentJobs.slice(0, 25),
+  })
+})
+
+function countNodes(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let count = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) count += countNodes(join(dir, entry.name))
+    else if (entry.name.endsWith('.md')) count++
+  }
+  return count
+}
+
 function broadcast(type: string) {
-  if (debounceTimer) clearTimeout(debounceTimer)
-  debounceTimer = setTimeout(() => {
+  const existing = debounceTimers.get(type)
+  if (existing) clearTimeout(existing)
+  debounceTimers.set(type, setTimeout(() => {
+    debounceTimers.delete(type)
     const payload = `data: ${JSON.stringify({ type })}\n\n`
     for (const client of clients) client.write(payload)
-  }, 300)
+  }, 300))
 }
 
 const initialGraphRoot = getGraphRoot()
@@ -1836,7 +2362,12 @@ watcher.on('all', (_event, changedPath) => {
     changedPath.endsWith('DREAMS.md') ||
     changedPath.includes('/briefs/') ||
     changedPath.includes('/nodes/') ||
-    changedPath.includes('/archive/')
+    changedPath.includes('/archive/') ||
+    changedPath.includes('/mind/') ||
+    changedPath.includes('/lenses/') ||
+    changedPath.includes('/sessions/') ||
+    changedPath.includes('/graph/') ||
+    changedPath.includes('/.pipeline/observations')
   ) {
     broadcast('graph')
     broadcast('status')

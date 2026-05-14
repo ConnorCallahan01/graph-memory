@@ -64,9 +64,9 @@ async function main() {
           ...(activeProject?.name && activeProject.name !== "global" ? { project: activeProject.name } : {}),
         },
         triggerSource: "hook:session-end",
-        idempotencyKey: `scribe:${snapshotPath}`,
+        idempotencyKey: "scribe:" + snapshotPath,
       });
-      console.error(`[graph-memory] Final buffer flushed to snapshot. ${queued.created ? "Scribe job queued." : "Scribe job already queued."}`);
+      console.error("[graph-memory] Final buffer flushed to snapshot. " + (queued.created ? "Scribe job queued." : "Scribe job already queued."));
     }
   }
 

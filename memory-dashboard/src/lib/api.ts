@@ -68,7 +68,7 @@ export interface PipelineStatus {
   completedJobs: number
   jobCounts: Record<string, Record<string, number>>
   pipelineCutoffs: Array<{
-    stage: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'skillforge' | 'memory_analysis'
+    stage: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'observer' | 'compressor' | 'skillforge' | 'memory_analysis'
     current: number
     threshold: number | null
     remaining: number | null
@@ -147,7 +147,7 @@ export interface AuditData {
 
 export interface PipelineJob {
   id: string
-  type: 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'memory_analysis'
+  type: string
   state: 'queued' | 'running' | 'done' | 'failed'
   displayState: 'queued' | 'running' | 'done' | 'failed' | 'noop'
   createdAt: string
@@ -345,6 +345,33 @@ export interface SessionTraceSummary {
   lastEvents: SessionTraceEvent[]
 }
 
+export interface ProjectSummary {
+  name: string
+  nodeCount: number
+  lastUpdated: string | null
+  categories: Record<string, number>
+  hasWorking: boolean
+  workingPreview: string | null
+  workingUpdatedAt: string | null
+  sessionCount: number
+}
+
+export interface ProjectsData {
+  projects: ProjectSummary[]
+  global: {
+    nodeCount: number
+    categories: Record<string, number>
+  }
+  totalNodes: number
+  totalProjects: number
+}
+
+export async function fetchProjects(): Promise<ProjectsData> {
+  const res = await fetch('/api/projects')
+  if (!res.ok) return { projects: [], global: { nodeCount: 0, categories: {} }, totalNodes: 0, totalProjects: 0 }
+  return res.json()
+}
+
 export async function fetchPipeline(): Promise<PipelineJob[]> {
   const res = await fetch('/api/pipeline')
   if (!res.ok) return []
@@ -519,13 +546,47 @@ export async function archiveDream(bucket: string, filename: string): Promise<vo
   if (!res.ok) throw new Error(`API error: ${res.status}`)
 }
 
+export interface MentalModel {
+  version: number
+  generatedAt: string
+  cognitiveStyle: string
+  decisionPatterns: string[]
+  preferences: string[]
+  guardrails: string[]
+  emotionalProfile: string
+  relationalNotes: string[]
+  tokenEstimate: number
+}
+
+export interface ModelResponse {
+  model: MentalModel
+  lastCompressorRun: string
+  observationCount: number
+}
+
+export interface WhisperResponse {
+  whisper: string
+  tokens: number
+}
+
+export async function fetchModel(): Promise<ModelResponse | null> {
+  const res = await fetch('/api/v3/model')
+  if (!res.ok) return null
+  return res.json()
+}
+
+export async function fetchWhisper(): Promise<WhisperResponse | null> {
+  const res = await fetch('/api/v3/whisper')
+  if (!res.ok) return null
+  return res.json()
+}
+
 export function subscribeToEvents(onEvent: (type: string) => void): () => void {
   const es = new EventSource('/api/events')
   es.onmessage = (e) => {
     try {
       const data = JSON.parse(e.data)
       if (data.type === 'connected') {
-        // Reconnected — refresh everything
         onEvent('graph')
         onEvent('status')
         return

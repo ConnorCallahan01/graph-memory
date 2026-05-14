@@ -123,7 +123,7 @@ async function main() {
     const assistantTracePath = getAssistantTracePath(sessionId);
     const toolTracePath = getToolTracePath(sessionId);
 
-    const { created } = enqueueJob({
+    const { created: scribeCreated } = enqueueJob({
       type: "scribe",
       payload: {
         snapshotPath,
@@ -136,7 +136,7 @@ async function main() {
       idempotencyKey: `scribe:${snapshotPath}`,
     });
 
-    console.error(`[graph-memory] Buffer rotated (${messageCount} messages). ${created ? "Scribe job queued." : "Scribe job already queued."}${transcriptResult.appended > 0 ? ` Synced ${transcriptResult.appended} assistant trace events.` : ""}`);
+    console.error(`[graph-memory] Buffer rotated (${messageCount} messages). ${scribeCreated ? "Scribe job queued." : "Scribe job already queued."}${transcriptResult.appended > 0 ? ` Synced ${transcriptResult.appended} assistant trace events.` : ""}`);
   }
 
   clearMemoryGateState(sessionId);

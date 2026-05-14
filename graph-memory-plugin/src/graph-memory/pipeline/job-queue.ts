@@ -6,6 +6,8 @@ import { createJob, GraphMemoryJob, GraphMemoryJobPayload, GraphMemoryJobState, 
 
 const PRIORITY: Record<GraphMemoryJobType, number> = {
   scribe: 0,
+  observer: 0,
+  compressor: 1,
   working_update: 1,
   auditor: 2,
   librarian: 3,
@@ -13,6 +15,8 @@ const PRIORITY: Record<GraphMemoryJobType, number> = {
   skillforge: 5,
   skillforge_refresh: 5,
   memory_analysis: 6,
+  bootstrap_project_doc: 3,
+  dreamer_v3: 4,
 };
 
 function stateDir(state: GraphMemoryJobState): string {
@@ -169,14 +173,16 @@ export function enqueueJob<TPayload extends GraphMemoryJobPayload>(opts: {
   return { job, created: true };
 }
 
-export function claimNextJob(): GraphMemoryJob | null {
+export function claimNextJob(skipTypes?: Set<string>): GraphMemoryJob | null {
   ensureJobDirectories();
-  const next = listJobs("queued")
+  const sorted = listJobs("queued")
     .sort((a, b) => {
       const priority = PRIORITY[a.type] - PRIORITY[b.type];
       if (priority !== 0) return priority;
       return a.createdAt.localeCompare(b.createdAt);
-    })[0];
+    });
+
+  const next = skipTypes ? sorted.find(j => !skipTypes.has(j.type)) : sorted[0];
 
   if (!next) return null;
 

@@ -77,6 +77,7 @@ export class BufferWatcher {
     if (!snapshotPath) return;
 
     this.queueScribe(snapshotPath);
+    this.queueObserver(snapshotPath);
   }
 
   private rotateBuffer(content?: string): string | null {
@@ -111,9 +112,22 @@ export class BufferWatcher {
         sessionId: this.sessionId,
       },
       triggerSource: "buffer-watcher:threshold",
-      idempotencyKey: `scribe:${snapshotPath}`,
+      idempotencyKey: "scribe:" + snapshotPath,
     });
-    activityBus.log("scribe:pending", `${created ? "Queued" : "Skipped duplicate"} scribe job for ${snapshotPath}`);
+    activityBus.log("scribe:pending", (created ? "Queued" : "Skipped duplicate") + " scribe job for " + snapshotPath);
+  }
+
+  private queueObserver(snapshotPath: string) {
+    const { created } = enqueueJob({
+      type: "observer",
+      payload: {
+        snapshotPath,
+        sessionId: this.sessionId,
+      },
+      triggerSource: "buffer-watcher:threshold",
+      idempotencyKey: "observer:" + snapshotPath,
+    });
+    activityBus.log("observer:pending", (created ? "Queued" : "Skipped duplicate") + " observer job for " + snapshotPath);
   }
 
   startSession() {
@@ -133,6 +147,7 @@ export class BufferWatcher {
         const snapshotPath = this.rotateBuffer(content);
         if (snapshotPath) {
           this.queueScribe(snapshotPath);
+          this.queueObserver(snapshotPath);
         }
         return snapshotPath;
       }

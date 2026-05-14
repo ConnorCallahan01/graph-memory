@@ -65,6 +65,10 @@ export function runDecay(reinforcedPaths: Set<string> = new Set()): {
         continue;
       }
 
+      if (parsed.data.decay_exempt === true) {
+        continue;
+      }
+
       // Skip nodes that were reinforced this session
       if (reinforcedPaths.has(nodePath)) {
         // Reset updated timestamp for reinforced nodes

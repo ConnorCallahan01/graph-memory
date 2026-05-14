@@ -43,12 +43,14 @@ interface ToolTraceEvent {
   type?: string;
   timestamp?: string;
   toolName?: string;
+  accessKind?: string;
   success?: boolean | null;
   commandPreview?: string | null;
   argsPreview?: Record<string, unknown> | null;
   inputPreview?: unknown;
   outputPreview?: unknown;
   errorPreview?: unknown;
+  targetPaths?: string[];
 }
 
 interface WorkingSessionEntry {
@@ -66,6 +68,7 @@ interface WorkingSessionEntry {
   recalledNodes: string[];
   createdNodes: string[];
   updatedNodes: string[];
+  keyFiles: KeyFileEntry[];
 }
 
 interface ProjectWorkingState {
@@ -80,6 +83,7 @@ interface UpdateProjectWorkingOptions {
   sessionId: string;
   toolTracePath?: string;
   updatePath?: string;
+  fileInteractionPath?: string;
 }
 
 interface WorkingSessionUpdateArtifact {
@@ -95,7 +99,23 @@ interface WorkingSessionUpdateArtifact {
   recalledNodes?: string[];
   createdNodes?: string[];
   updatedNodes?: string[];
+  keyFiles?: KeyFileEntry[];
 }
+
+interface KeyFileEntry {
+  path: string;
+  role: string;
+  note?: string;
+}
+
+interface FileInteraction {
+  path: string;
+  count: number;
+  roles: string[];
+}
+
+const FILE_INTERACTION_EXCLUDE = /node_modules|\.graph-memory[/\\]|\.deltas[/\\]|\.pipeline[/\\]|\.jobs[/\\]|\.buffer[/\\]/;
+const FILE_INTERACTION_JUNK = /^\/(tmp|dev|proc|sys|etc|var|usr|bin|sbin|opt|lib|home)\b|^\/dev\/null|\/tmp\/|\)$|^\.$|^\.\.$/;
 
 const EMPTY_MARKER = "_No session handoff captured yet for this repository._";
 
@@ -339,6 +359,114 @@ function collectToolSignals(toolTracePath: string | undefined): {
   return { commits, worked, didntWork, recalledNodes };
 }
 
+function accessKindToRole(accessKind?: string): string {
+  switch ((accessKind || "").trim().toLowerCase()) {
+    case "write":
+      return "edited";
+    case "execute":
+      return "ran";
+    case "read":
+      return "read";
+    case "search":
+      return "search";
+    default:
+      return "";
+  }
+}
+
+function cleanFilePath(filePath: string, cwd?: string): string | null {
+  let cleaned = filePath;
+
+  if (cwd && cleaned.startsWith(cwd + "/")) {
+    cleaned = cleaned.slice(cwd.length + 1);
+  }
+
+  cleaned = cleaned.replace(/^\.\/+/, "");
+
+  if (!cleaned || cleaned.length < 3) return null;
+  if (FILE_INTERACTION_JUNK.test(cleaned)) return null;
+  if (!/[a-zA-Z]/.test(cleaned)) return null;
+  if (cleaned.includes(" ")) return null;
+
+  return cleaned;
+}
+
+export function collectFileInteractions(toolTracePath: string | undefined): FileInteraction[] {
+  if (!toolTracePath || !fs.existsSync(toolTracePath)) return [];
+
+  const events = readJsonLines<ToolTraceEvent>(toolTracePath);
+  const byPath = new Map<string, { count: number; roles: Set<string> }>();
+
+  for (const event of events) {
+    const targets = event.targetPaths || [];
+    const role = accessKindToRole(event.accessKind);
+    const cwd = typeof (event as any).cwd === "string" ? (event as any).cwd : undefined;
+
+    for (const rawPath of targets) {
+      const filePath = cleanFilePath(rawPath, cwd);
+      if (!filePath) continue;
+      if (FILE_INTERACTION_EXCLUDE.test(filePath)) continue;
+
+      const existing = byPath.get(filePath) || { count: 0, roles: new Set<string>() };
+      existing.count += 1;
+      if (role) existing.roles.add(role);
+      byPath.set(filePath, existing);
+    }
+
+    if (!targets.length && event.commandPreview && event.accessKind === "execute") {
+      const pathMatches = event.commandPreview.match(/(?:\/|\.\.?\/)[^\s"'`]+/g) || [];
+      for (const rawMatch of pathMatches.slice(0, 8)) {
+        const filePath = cleanFilePath(rawMatch, cwd);
+        if (!filePath) continue;
+        if (FILE_INTERACTION_EXCLUDE.test(filePath)) continue;
+
+        const existing = byPath.get(filePath) || { count: 0, roles: new Set<string>() };
+        existing.count += 1;
+        existing.roles.add("ran");
+        byPath.set(filePath, existing);
+      }
+    }
+  }
+
+  return [...byPath.entries()]
+    .map(([filePath, data]) => ({
+      path: filePath,
+      count: data.count,
+      roles: [...data.roles],
+    }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 20);
+}
+
+function readFileInteractionJson(filePath: string | undefined): FileInteraction[] {
+  if (!filePath || !fs.existsSync(filePath)) return [];
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf-8")) as FileInteraction[];
+  } catch {
+    return [];
+  }
+}
+
+function mergeKeyFiles(
+  agentKeyFiles: KeyFileEntry[] | undefined,
+  fileInteractions: FileInteraction[]
+): KeyFileEntry[] {
+  if (agentKeyFiles && agentKeyFiles.length > 0) {
+    return agentKeyFiles.slice(0, 8);
+  }
+
+  return fileInteractions
+    .filter((fi) => {
+      if (!fi.path.includes(".")) return false;
+      return fi.roles.some((r) => r === "edited" || r === "created");
+    })
+    .slice(0, 8)
+    .map((fi) => ({
+      path: fi.path,
+      role: fi.roles.includes("edited") ? "edited" : "created",
+    }));
+}
+
 function deriveNextPickup(entry: WorkingSessionEntry): string[] {
   if (entry.didntWork.length > 0) {
     return [
@@ -492,47 +620,60 @@ function buildMemoryItems(latest: WorkingSessionEntry): string[] {
 function renderProjectWorkingMarkdown(state: ProjectWorkingState): string {
   const latest = state.sessions[0];
   let content = `# WORKING — ${state.project}\n\n`;
-  content += `> Persistent repo handoff. Optimized for "Let's pick up where we left off." Updated after successful scribes.\n\n`;
-  content += `**Last updated:** ${state.updatedAt}\n`;
+  content += `> Lean handoff. Updated after each scribe. Say "pick up where we left off."\n\n`;
+  content += `**Updated:** ${state.updatedAt}\n`;
 
   if (!latest) {
-    content += `\n## Resume Now\n\n${EMPTY_MARKER}\n`;
+    content += `\n## Now\n\n${EMPTY_MARKER}\n`;
     return content;
   }
 
   const resumeItems = buildResumeNowItems(latest);
-  const currentStateItems = buildCurrentStateItems(latest);
-  const openLoopItems = buildOpenLoopItems(latest);
   const evidenceItems = buildEvidenceItems(latest);
-  const memoryItems = buildMemoryItems(latest);
 
-  content += `\n## Resume Now\n\n`;
-  content += `**Most recent session:** ${latest.sessionId}\n`;
-  content += `**Activity timestamp:** ${latest.activityAt}\n`;
-  content += `**Last refreshed:** ${latest.lastUpdatedAt}\n\n`;
+  content += `\n## Now\n\n`;
+  for (const item of compactItems(resumeItems, 3)) {
+    content += `- ${item}\n`;
+  }
+  if (resumeItems.length === 0 && latest.tasksWorkedOn.length > 0) {
+    content += `- Continue: ${latest.tasksWorkedOn[0]}\n`;
+  }
 
-  content += renderBulletSection("Start Here", resumeItems, "Resume from the latest task thread.");
-  content += `\n`;
-  content += renderBulletSection("Current State", currentStateItems, "No current state captured yet.");
-  content += `\n`;
-  content += renderBulletSection("Open Loops / Blockers", openLoopItems, "No blockers captured.");
-  content += `\n`;
-  content += renderBulletSection("Evidence", evidenceItems, "No commits, passing checks, or execution evidence captured yet.");
-  content += `\n`;
-  content += renderBulletSection("Relevant Memory", memoryItems, "No graph nodes were captured for this session yet.");
-
-  content += `\n## Session Timeline\n`;
-  for (const session of state.sessions.slice(0, 6)) {
-    content += `\n### ${session.lastUpdatedAt} — ${session.sessionId}\n\n`;
-    content += renderBulletSection("Session Summaries", session.summaries, "No scribe summaries yet.");
-    content += `\n`;
-    content += renderBulletSection("Tasks Worked On", session.tasksWorkedOn, "No tasks captured.");
-    content += `\n`;
-    content += renderBulletSection("Next Pickup", session.nextPickup, "Continue from the most recent task.");
-    if (session.didntWork.length > 0) {
-      content += `\n`;
-      content += renderBulletSection("Blockers", compactItems(session.didntWork, 3), "No failures captured.");
+  if (latest.didntWork.length > 0) {
+    content += `\n## Blocked\n\n`;
+    for (const item of compactItems(latest.didntWork, 2)) {
+      content += `- ${item}\n`;
     }
+  }
+
+  if (evidenceItems.length > 0) {
+    content += `\n## Done\n\n`;
+    for (const item of compactItems(evidenceItems, 3)) {
+      content += `- ${item}\n`;
+    }
+  }
+
+  const filesToRender = compactItems(
+    (latest.keyFiles || [])
+      .filter((kf) => kf.role !== "read")
+      .map((kf) => {
+        const label = kf.note ? ` — ${kf.note}` : "";
+        return `\`${kf.path}\` (${kf.role})${label}`;
+      }),
+    8,
+  );
+  if (filesToRender.length > 0) {
+    content += `\n## Files\n\n`;
+    for (const f of filesToRender) content += `- ${f}\n`;
+  }
+
+  const relevantNodes: string[] = [];
+  for (const p of compactItems(latest.createdNodes, 3)) pushUnique(relevantNodes, `+${p}`, 8);
+  for (const p of compactItems(latest.updatedNodes, 3)) pushUnique(relevantNodes, `~${p}`, 8);
+  for (const p of compactItems(latest.recalledNodes, 3)) pushUnique(relevantNodes, `@${p}`, 8);
+  if (relevantNodes.length > 0) {
+    content += `\n## Memory\n\n`;
+    for (const n of relevantNodes) content += `- ${n}\n`;
   }
 
   return `${content.trimEnd()}\n`;
@@ -588,28 +729,36 @@ export function updateProjectWorkingFromSession(opts: UpdateProjectWorkingOption
     recalledNodes: [],
     createdNodes: [],
     updatedNodes: [],
+    keyFiles: [],
   };
 
   session.activityAt = activityAt;
   session.lastUpdatedAt = now;
 
-  const generatedSummaries = normalizeProjectArtifactList(generated?.summaries, 12);
-  const generatedTasksWorkedOn = normalizeProjectArtifactList(generated?.tasksWorkedOn, 12);
-  const generatedCommits = normalizeProjectArtifactList(generated?.commits, 10);
-  const generatedWorked = normalizeProjectArtifactList(generated?.worked, 12);
-  const generatedDidntWork = normalizeProjectArtifactList(generated?.didntWork, 12);
-  const generatedNextPickup = normalizeProjectArtifactList(generated?.nextPickup, 8);
-  const generatedRecalledNodes = normalizeProjectArtifactList(generated?.recalledNodes, 18);
+  const generatedSummaries = normalizeProjectArtifactList(generated?.summaries, 3);
+  const generatedTasksWorkedOn = normalizeProjectArtifactList(generated?.tasksWorkedOn, 3);
+  const generatedCommits = normalizeProjectArtifactList(generated?.commits, 3);
+  const generatedWorked = normalizeProjectArtifactList(generated?.worked, 3);
+  const generatedDidntWork = normalizeProjectArtifactList(generated?.didntWork, 3);
+  const generatedNextPickup = normalizeProjectArtifactList(generated?.nextPickup, 3);
+  const generatedRecalledNodes = normalizeProjectArtifactList(generated?.recalledNodes, 8);
 
-  for (const item of generatedSummaries) pushUnique(session.summaries, item, 12);
-  for (const item of generatedTasksWorkedOn) pushUnique(session.tasksWorkedOn, item, 12);
-  for (const item of generatedCommits) pushUnique(session.commits, item, 10);
-  for (const item of generatedWorked) pushUnique(session.worked, item, 12);
-  for (const item of generatedDidntWork) pushUnique(session.didntWork, item, 12);
-  for (const item of generatedNextPickup) pushUnique(session.nextPickup, item, 8);
-  for (const item of generatedRecalledNodes) pushUnique(session.recalledNodes, item, 18);
-  for (const item of normalizeProjectArtifactList(generated?.createdNodes, 18)) pushUnique(session.createdNodes, item, 18);
-  for (const item of normalizeProjectArtifactList(generated?.updatedNodes, 18)) pushUnique(session.updatedNodes, item, 18);
+  if (generatedSummaries.length > 0) session.summaries = generatedSummaries;
+  if (generatedTasksWorkedOn.length > 0) session.tasksWorkedOn = generatedTasksWorkedOn;
+  if (generatedCommits.length > 0) session.commits = generatedCommits;
+  if (generatedWorked.length > 0) session.worked = generatedWorked;
+  if (generatedDidntWork.length > 0) session.didntWork = generatedDidntWork;
+  if (generatedNextPickup.length > 0) session.nextPickup = generatedNextPickup;
+  if (generatedRecalledNodes.length > 0) session.recalledNodes = generatedRecalledNodes;
+  if (generated?.createdNodes && generated.createdNodes.length > 0) session.createdNodes = normalizeProjectArtifactList(generated.createdNodes, 8);
+  if (generated?.updatedNodes && generated.updatedNodes.length > 0) session.updatedNodes = normalizeProjectArtifactList(generated.updatedNodes, 8);
+
+  const fileInteractions = readFileInteractionJson(opts.fileInteractionPath);
+  if (generated?.keyFiles && generated.keyFiles.length > 0) {
+    session.keyFiles = generated.keyFiles.slice(0, 8);
+  } else if (fileInteractions.length > 0) {
+    session.keyFiles = mergeKeyFiles(undefined, fileInteractions);
+  }
 
   for (const scribe of relevantScribes) {
     if (scribe.summary) {
@@ -670,6 +819,7 @@ export function updateProjectWorkingFromSession(opts: UpdateProjectWorkingOption
 
   const sessionsWithoutCurrent = state.sessions.filter((entry) => entry.sessionId !== session.sessionId);
   state.sessions = [session, ...sessionsWithoutCurrent]
+    .slice(0, 5)
     .sort((a, b) => {
       const activityDelta = Date.parse(b.activityAt) - Date.parse(a.activityAt);
       if (!Number.isNaN(activityDelta) && activityDelta !== 0) {

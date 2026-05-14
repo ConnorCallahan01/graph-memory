@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-export type GraphMemoryJobType = "scribe" | "working_update" | "auditor" | "librarian" | "dreamer" | "memory_analysis" | "skillforge" | "skillforge_refresh";
+export type GraphMemoryJobType = "scribe" | "observer" | "compressor" | "working_update" | "auditor" | "librarian" | "dreamer" | "dreamer_v3" | "memory_analysis" | "skillforge" | "skillforge_refresh" | "bootstrap_project_doc";
 export type GraphMemoryJobState = "queued" | "running" | "done" | "failed";
 
 export interface ScribeJobPayload {
@@ -9,6 +9,21 @@ export interface ScribeJobPayload {
   project?: string;
   assistantTracePath?: string;
   toolTracePath?: string;
+}
+
+export interface ObserverJobPayload {
+  snapshotPath: string;
+  sessionId: string;
+  project?: string;
+  assistantTracePath?: string;
+  toolTracePath?: string;
+}
+
+export interface CompressorJobPayload {
+  layers?: Array<"global" | "project">;
+  projects?: string[];
+  force?: boolean;
+  reason: string;
 }
 
 export interface AuditorJobPayload {
@@ -52,15 +67,30 @@ export interface SkillforgeRefreshJobPayload {
   reason: string;
 }
 
+export interface BootstrapProjectDocPayload {
+  project: string;
+  harness: string;
+  cwd: string;
+  reason: string;
+}
+
+export interface DreamerV3JobPayload {
+  reason: string;
+}
+
 export type GraphMemoryJobPayload =
   | ScribeJobPayload
+  | ObserverJobPayload
+  | CompressorJobPayload
   | WorkingUpdateJobPayload
   | AuditorJobPayload
   | LibrarianJobPayload
   | DreamerJobPayload
+  | DreamerV3JobPayload
   | MemoryAnalysisJobPayload
   | SkillforgeJobPayload
-  | SkillforgeRefreshJobPayload;
+  | SkillforgeRefreshJobPayload
+  | BootstrapProjectDocPayload;
 
 export interface GraphMemoryJob<TPayload = GraphMemoryJobPayload> {
   id: string;
@@ -91,15 +121,19 @@ export interface CreateJobOptions<TPayload = GraphMemoryJobPayload> {
 export function defaultMaxAttempts(type: GraphMemoryJobType): number {
   switch (type) {
     case "scribe":
+    case "observer":
+    case "compressor":
       return 3;
     case "working_update":
       return 2;
     case "auditor":
     case "librarian":
     case "dreamer":
+    case "dreamer_v3":
     case "memory_analysis":
     case "skillforge":
     case "skillforge_refresh":
+    case "bootstrap_project_doc":
       return 2;
   }
 }

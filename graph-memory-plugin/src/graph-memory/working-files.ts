@@ -30,6 +30,11 @@ export function getWorkingInjectionPaths(projectName?: string): string[] {
   return [CONFIG.paths.workingGlobal];
 }
 
+export function getFileInteractionPath(projectName: string, sessionId: string): string {
+  const safeSessionId = sessionId.replace(/[^a-zA-Z0-9_\-]/g, "_");
+  return path.join(getProjectWorkingUpdatesDir(projectName), `${safeSessionId}.files.json`);
+}
+
 export function ensureWorkingDirectories(): void {
   for (const dir of [CONFIG.paths.workingRoot, CONFIG.paths.workingProjects, path.join(CONFIG.paths.workingProjects, "_updates")]) {
     if (!fs.existsSync(dir)) {

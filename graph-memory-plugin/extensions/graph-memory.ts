@@ -245,14 +245,21 @@ SETUP:
     messageCount = 0;
 
     if (_enqueueJob) {
+      const jobPayload = {
+        snapshotPath,
+        sessionId: captureSessionId,
+      };
       _enqueueJob({
         type: "scribe",
-        payload: {
-          snapshotPath,
-          sessionId: captureSessionId,
-        },
+        payload: jobPayload,
         triggerSource: "pi-extension:threshold",
         idempotencyKey: `scribe:${snapshotPath}`,
+      });
+      _enqueueJob({
+        type: "observer",
+        payload: jobPayload,
+        triggerSource: "pi-extension:threshold",
+        idempotencyKey: `observer:${snapshotPath}`,
       });
     }
   }
@@ -436,12 +443,34 @@ SETUP:
 
     // --- Inject context files ---
     if (!_CONFIG) {
-      // Still emit any ambient recall we have
       if (extraMessages.length > 0) {
         return { message: extraMessages[0] };
       }
       return;
     }
+
+    // v3 path: try whisper-based injection first
+    try {
+      const { hasV3Data, buildV3Context } = require("../dist/graph-memory/session-start-v3.js");
+      if (hasV3Data()) {
+        const v3 = buildV3Context("global");
+        if (!v3.sources.fallback && v3.context) {
+          const v3Parts: string[] = [];
+          const recallBlock = ambientRecall(event.prompt);
+          if (recallBlock) v3Parts.push(recallBlock);
+          v3Parts.push(v3.context);
+          if (v3Parts.length > 0) {
+            return {
+              message: {
+                customType: "graph-memory-context",
+                content: v3Parts.join("\n\n"),
+                display: false,
+              },
+            };
+          }
+        }
+      }
+    } catch { /* v3 not available, fall through to v2 */ }
 
     const artifacts: Array<{ filePath: string; label: string }> = [
       { filePath: _CONFIG.paths.priors, label: "PRIORS (behavioral guidelines)" },

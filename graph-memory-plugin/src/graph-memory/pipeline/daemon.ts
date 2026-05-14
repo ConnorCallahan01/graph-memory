@@ -11,12 +11,17 @@ import { runPipelineWorker } from "./worker-runner.js";
 import { loadRuntimeConfig } from "../runtime.js";
 import { regenerateCoreContextFiles, regenerateDreamContext } from "./graph-ops.js";
 import { runDecay } from "./decay.js";
-import { updateProjectWorkingFromSession } from "../project-working.js";
+import { updateProjectWorkingFromSession, collectFileInteractions } from "../project-working.js";
 import { scoreCandidates, computeNodeContentHash } from "./skillforge-score.js";
 import { listManifests, findDriftedManifests } from "./skillforge-manifest.js";import { getAssistantTracePath, getToolTracePath } from "../session-trace.js";
 import { getDailyBriefPaths } from "../briefs.js";
 import { loadExternalInputsConfig, readRecentClassifiedInputs } from "../external-inputs.js";
-import { getProjectWorkingPath, getProjectWorkingStatePath, getProjectWorkingUpdatePath } from "../working-files.js";
+import { getProjectWorkingPath, getProjectWorkingStatePath, getProjectWorkingUpdatePath, getFileInteractionPath } from "../working-files.js";
+import { processObserverOutputs } from "./observer-tools.js";
+import { processCompressorOutputs } from "./compressor-tools.js";
+import { rebuildV3Index } from "./graph-index-v3.js";
+import { bootstrapProjectDoc, detectDocDrift } from "./bootstrap.js";
+import { buildDreamerV3Input, processDreamerV3Outputs } from "./dreamer-v3-tools.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.resolve(__dirname, "../../../agents");
@@ -129,9 +134,153 @@ function maybeEnqueueAuditorFromScribeBacklog(reasonPrefix = "successful scribe 
 
   enqueueJob({
     type: "auditor",
-    payload: { reason: `${count} ${reasonPrefix}` },
+    payload: { reason: count + " " + reasonPrefix },
     triggerSource: "daemon:scribe-threshold",
-    idempotencyKey: `auditor:scribe-runs:${latestCompletedAt}`,
+    idempotencyKey: "auditor:scribe-runs:" + latestCompletedAt,
+  });
+}
+
+function countCompletedObserversSinceLastCompressor(): { count: number; latestCompletedAt: string | null } {
+  const completedCompressors = listJobs("done")
+    .filter((job) => job.type === "compressor")
+    .map((job) => job.completedAt || job.updatedAt || job.createdAt)
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => Date.parse(b) - Date.parse(a));
+
+  const lastCompressorAtMs = completedCompressors[0] ? Date.parse(completedCompressors[0]) : 0;
+  let count = 0;
+  let latestCompletedAt: string | null = null;
+
+  for (const job of listJobs("done")) {
+    if (job.type !== "observer") continue;
+    const completedAt = job.completedAt || job.updatedAt || job.createdAt;
+    const completedAtMs = Date.parse(completedAt);
+    if (Number.isNaN(completedAtMs) || completedAtMs <= lastCompressorAtMs) continue;
+    count += 1;
+    if (!latestCompletedAt || completedAtMs > Date.parse(latestCompletedAt)) {
+      latestCompletedAt = completedAt;
+    }
+  }
+
+  return { count, latestCompletedAt };
+}
+
+function maybeEnqueueCompressorFromObserverBacklog(): void {
+  if (hasActiveJob("compressor")) return;
+
+  const { count, latestCompletedAt } = countCompletedObserversSinceLastCompressor();
+  const threshold = CONFIG.session.compressorObserverThreshold;
+  if (count < threshold || !latestCompletedAt) return;
+
+  enqueueJob({
+    type: "compressor",
+    payload: {
+      layers: ["global", "project"],
+      reason: count + " observer runs since last compressor",
+    },
+    triggerSource: "daemon:observer-threshold",
+    idempotencyKey: "compressor:observer-runs:" + latestCompletedAt,
+  });
+}
+
+function countCompletedScribesSinceLastObserver(): { count: number; latestCompletedAt: string | null } {
+  const completedObservers = listJobs("done")
+    .filter((job) => job.type === "observer")
+    .map((job) => job.completedAt || job.updatedAt || job.createdAt)
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => Date.parse(b) - Date.parse(a));
+
+  const lastObserverAtMs = completedObservers[0] ? Date.parse(completedObservers[0]) : 0;
+  let count = 0;
+  let latestCompletedAt: string | null = null;
+
+  for (const job of listJobs("done")) {
+    if (job.type !== "scribe") continue;
+    const completedAt = job.completedAt || job.updatedAt || job.createdAt;
+    const completedAtMs = Date.parse(completedAt);
+    if (Number.isNaN(completedAtMs) || completedAtMs <= lastObserverAtMs) continue;
+    count += 1;
+    if (!latestCompletedAt || completedAtMs > Date.parse(latestCompletedAt)) {
+      latestCompletedAt = completedAt;
+    }
+  }
+
+  return { count, latestCompletedAt };
+}
+
+function maybeEnqueueObserverFromScribeBacklog(): void {
+  if (hasActiveJob("observer")) return;
+
+  const { count, latestCompletedAt } = countCompletedScribesSinceLastObserver();
+  if (count < CONFIG.session.observerScribeThreshold || !latestCompletedAt) return;
+
+  const deltaFiles: string[] = [];
+  const lastObserverCompleted = listJobs("done")
+    .filter((j) => j.type === "observer")
+    .map((j) => j.completedAt || j.updatedAt || j.createdAt)
+    .filter((v): v is string => Boolean(v))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0];
+
+  const lastObserverMs = lastObserverCompleted ? Date.parse(lastObserverCompleted) : 0;
+  for (const job of listJobs("done")) {
+    if (job.type !== "scribe") continue;
+    const completedAt = job.completedAt || job.updatedAt || job.createdAt;
+    const completedAtMs = Date.parse(completedAt);
+    if (Number.isNaN(completedAtMs) || completedAtMs <= lastObserverMs) continue;
+    const sid = (job.payload as any)?.sessionId;
+    if (sid) {
+      const deltaPath = path.join(CONFIG.paths.deltas, `${sid}.json`);
+      if (fs.existsSync(deltaPath)) deltaFiles.push(deltaPath);
+      const auditedPath = path.join(CONFIG.paths.deltas, "audited", `${sid}.json`);
+      if (fs.existsSync(auditedPath)) deltaFiles.push(auditedPath);
+    }
+  }
+
+  enqueueJob({
+    type: "observer",
+    payload: {
+      deltaFiles,
+      reason: count + " scribe runs since last observer",
+    },
+    triggerSource: "daemon:scribe-threshold",
+    idempotencyKey: "observer:scribe-runs:" + latestCompletedAt,
+  });
+}
+
+function maybeEnqueueBootstrapFromObserver(project: string | undefined, sessionId: string): void {
+  if (!project || project === "global") return;
+  if (hasActiveJob("bootstrap_project_doc")) return;
+
+  let totalObs = 0;
+
+  const projectObsPath = path.join(CONFIG.paths.v3Lenses, project, "observations.jsonl");
+  if (fs.existsSync(projectObsPath)) {
+    const lines = fs.readFileSync(projectObsPath, "utf-8").trim().split("\n").filter(Boolean);
+    totalObs += lines.filter((l) => {
+      try { return !JSON.parse(l).absorbed; } catch { return false; }
+    }).length;
+  }
+
+  const globalObsPath = path.join(CONFIG.paths.v3Mind, "observations.jsonl");
+  if (fs.existsSync(globalObsPath)) {
+    const lines = fs.readFileSync(globalObsPath, "utf-8").trim().split("\n").filter(Boolean);
+    totalObs += lines.filter((l) => {
+      try { return !JSON.parse(l).absorbed; } catch { return false; }
+    }).length;
+  }
+
+  if (totalObs < 5) return;
+
+  enqueueJob({
+    type: "bootstrap_project_doc",
+    payload: {
+      project,
+      harness: "opencode",
+      cwd: process.cwd(),
+      reason: totalObs + " unabsorbed observations for " + project,
+    },
+    triggerSource: "daemon:observer-threshold",
+    idempotencyKey: "bootstrap:" + project + ":" + sessionId,
   });
 }
 
@@ -599,6 +748,144 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
   maybeEnqueueAuditorFromScribeBacklog("successful scribe runs accumulated");
 }
 
+async function runObserver(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as {
+    deltaFiles?: string[];
+    reason?: string;
+    snapshotPath?: string;
+    sessionId?: string;
+    project?: string;
+    assistantTracePath?: string;
+    toolTracePath?: string;
+  };
+
+  const observerPromptPath = path.join(AGENTS_DIR, "memory-observer.md");
+  const obsDir = CONFIG.paths.v3PipelineObservations;
+  if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
+  const obsDirForWorker = toWorkerPath(obsDir);
+
+  let prompt: string;
+
+  if (payload.deltaFiles && payload.deltaFiles.length > 0) {
+    const deltaFilesForWorker = payload.deltaFiles.map(toWorkerPath);
+    prompt = `Read the observer instructions at ${observerPromptPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Write observation JSON files to ${obsDirForWorker}. This run was triggered because ${payload.reason || 'enough scribes completed'}. Read these scribe delta files and extract cross-project patterns, cognitive signals, and soma markers: ${deltaFilesForWorker.join(', ')}. Read the global mental model at mind/model.json if it exists. Read MAP.md for current graph context. Do NOT delete any delta files — they are shared with the project pipeline.`;
+  } else if (payload.snapshotPath) {
+    const snapshotPathForWorker = toWorkerPath(payload.snapshotPath);
+    prompt = `Read the observer instructions at ${observerPromptPath}, then follow them. Snapshot file: ${snapshotPathForWorker}, session ID: ${payload.sessionId || 'unknown'}, graph root: ${CONFIG.paths.graphRoot}. Write observation JSON files to ${obsDirForWorker}. Read the global mental model at mind/model.json if it exists. Read MAP.md for current graph context. Delete the snapshot file when complete.`;
+  } else {
+    activityBus.log("system:info", "Observer job has no delta files or snapshot, skipping", { jobId: job.id });
+    return;
+  }
+
+  const result = await runPipelineWorker({
+    name: "observer-" + job.id,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 5 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    throw new Error("Observer worker exited with code " + result.exitCode + ". See " + result.logFile);
+  }
+
+  if (payload.snapshotPath && fs.existsSync(payload.snapshotPath)) {
+    fs.unlinkSync(payload.snapshotPath);
+  }
+
+  const sessionId = payload.sessionId || `observer-${job.id}`;
+  const toolResult = processObserverOutputs(sessionId, payload.project);
+
+  activityBus.log("observer:complete", "Observer run complete", {
+    jobId: job.id,
+    sessionId,
+    project: payload.project || "global",
+    observationsCreated: toolResult.observationsCreated,
+    sessionLogged: toolResult.sessionLogged,
+    nodesUpserted: toolResult.nodesUpserted,
+    errors: toolResult.errors,
+  });
+
+  if (toolResult.errors.length > 0) {
+    activityBus.log("observer:warnings", "Observer had processing errors", {
+      jobId: job.id,
+      errors: toolResult.errors,
+    });
+  }
+
+  maybeEnqueueCompressorFromObserverBacklog();
+}
+
+async function runCompressor(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as {
+    layers?: Array<"global" | "project">;
+    projects?: string[];
+    force?: boolean;
+    reason: string;
+  };
+
+  const compressorPromptPath = path.join(AGENTS_DIR, "memory-compressor.md");
+  const layers = payload.layers || ["global", "project"];
+  const projectList = payload.projects || [];
+
+  let prompt = "Read the compressor instructions at " + compressorPromptPath + ", then follow them. Graph root: " + CONFIG.paths.graphRoot + ". Layers to process: " + layers.join(", ") + ".";
+  if (projectList.length > 0) {
+    prompt += " Projects: " + projectList.join(", ") + ".";
+  }
+  if (payload.force) {
+    prompt += " This is a forced run — process all unabsorbed observations regardless of count.";
+  }
+  prompt += " Reason: " + payload.reason;
+
+  const obsDir = CONFIG.paths.v3PipelineObservations;
+  if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
+
+  const result = await runPipelineWorker({
+    name: "compressor-" + job.id,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 10 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    throw new Error("Compressor worker exited with code " + result.exitCode + ". See " + result.logFile);
+  }
+
+  const toolResult = processCompressorOutputs();
+
+  try { rebuildV3Index(); } catch { /* non-critical */ }
+
+  activityBus.log("system:info", "Compressor run complete", {
+    jobId: job.id,
+    reason: payload.reason,
+    modelsUpdated: toolResult.modelsUpdated,
+    whispersGenerated: toolResult.whispersGenerated,
+    observationsAbsorbed: toolResult.observationsAbsorbed,
+    graphNodesArchived: toolResult.graphNodesArchived,
+    errors: toolResult.errors.length,
+  });
+
+  if (!hasActiveJob("dreamer_v3") && !hasActiveJob("dreamer")) {
+    enqueueJob({
+      type: "dreamer_v3",
+      payload: { reason: "compressor completed" },
+      triggerSource: "daemon:compressor-complete",
+      idempotencyKey: "dreamer-v3:" + Date.now(),
+    });
+  }
+}
+
 async function runWorkingUpdate(job: GraphMemoryJob): Promise<void> {
   const payload = job.payload as {
     sessionId: string;
@@ -627,7 +914,13 @@ async function runWorkingUpdate(job: GraphMemoryJob): Promise<void> {
   const assistantTracePathForWorker = payload.assistantTracePath ? toWorkerPath(payload.assistantTracePath) : null;
   const toolTracePathForWorker = payload.toolTracePath ? toWorkerPath(payload.toolTracePath) : null;
 
-  const prompt = `Read the working updater instructions at ${updaterPathForWorker}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Project: ${payload.project}. Session ID: ${payload.sessionId}. Delta file: ${deltaPathForWorker}. Project WORKING markdown: ${workingPathForWorker}. Project WORKING state JSON: ${workingStatePathForWorker}.${assistantTracePathForWorker ? ` Assistant trace: ${assistantTracePathForWorker}.` : ""}${toolTracePathForWorker ? ` Tool trace: ${toolTracePathForWorker}.` : ""} Write the session working update artifact JSON to ${updateOutputPathForWorker}.`;
+  const fileInteractionData = collectFileInteractions(payload.toolTracePath);
+  const fileInteractionPath = getFileInteractionPath(payload.project, payload.sessionId);
+  fs.mkdirSync(path.dirname(fileInteractionPath), { recursive: true });
+  fs.writeFileSync(fileInteractionPath, JSON.stringify(fileInteractionData, null, 2));
+  const fileInteractionPathForWorker = fileInteractionData.length > 0 ? toWorkerPath(fileInteractionPath) : null;
+
+  const prompt = `Read the working updater instructions at ${updaterPathForWorker}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Project: ${payload.project}. Session ID: ${payload.sessionId}. Delta file: ${deltaPathForWorker}. Project WORKING markdown: ${workingPathForWorker}. Project WORKING state JSON: ${workingStatePathForWorker}.${assistantTracePathForWorker ? ` Assistant trace: ${assistantTracePathForWorker}.` : ""}${toolTracePathForWorker ? ` Tool trace: ${toolTracePathForWorker}.` : ""}${fileInteractionPathForWorker ? ` File interaction summary: ${fileInteractionPathForWorker}.` : ""} Write the session working update artifact JSON to ${updateOutputPathForWorker}.`;
 
   const result = await runPipelineWorker({
     name: `working-update-${job.id}`,
@@ -655,6 +948,7 @@ async function runWorkingUpdate(job: GraphMemoryJob): Promise<void> {
     sessionId: payload.sessionId,
     toolTracePath: payload.toolTracePath,
     updatePath: updateOutputPath,
+    fileInteractionPath,
   });
 }
 
@@ -762,6 +1056,45 @@ async function runDreamer(job: GraphMemoryJob): Promise<void> {
   regenerateDreamContext();
 
   clearLegacyMarkers();
+}
+
+async function runDreamerV3(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as { reason: string };
+  const dreamerPromptPath = path.join(AGENTS_DIR, "memory-dreamer-v3.md");
+  const input = buildDreamerV3Input();
+
+  const obsDir = CONFIG.paths.v3PipelineObservations;
+  if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
+  const obsDirForWorker = toWorkerPath(obsDir);
+
+  const prompt = "Read the dreamer v3 instructions at " + dreamerPromptPath + ", then follow them. Graph root: " + CONFIG.paths.graphRoot + ". Write dream JSON files to " + obsDirForWorker + ". Reason: " + payload.reason + "\n\n" + input;
+
+  const result = await runPipelineWorker({
+    name: "dreamer-v3-" + job.id,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 8 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    throw new Error("Dreamer v3 worker exited with code " + result.exitCode + ". See " + result.logFile);
+  }
+
+  const toolResult = processDreamerV3Outputs();
+
+  activityBus.log("system:info", "Dreamer v3 run complete", {
+    jobId: job.id,
+    reason: payload.reason,
+    dreamsProposed: toolResult.dreamsProposed,
+    dreamsPromoted: toolResult.dreamsPromoted,
+    errors: toolResult.errors.length,
+  });
 }
 
 async function runMemoryAnalysis(job: GraphMemoryJob): Promise<void> {
@@ -962,10 +1295,33 @@ function maybeEnqueueSkillforgeRefresh(): void {
   }
 }
 
+async function runBootstrap(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as {
+    project: string;
+    harness: string;
+    cwd: string;
+    reason: string;
+  };
+
+  const result = bootstrapProjectDoc(payload.project, payload.harness, payload.cwd);
+
+  activityBus.log("system:info", "Bootstrap project doc complete", {
+    jobId: job.id,
+    project: payload.project,
+    filePath: result.filePath,
+    created: result.created,
+    sections: result.sections,
+  });
+}
+
 async function processJob(job: GraphMemoryJob): Promise<void> {
   switch (job.type) {
     case "scribe":
       return runScribe(job);
+    case "observer":
+      return runObserver(job);
+    case "compressor":
+      return runCompressor(job);
     case "working_update":
       return runWorkingUpdate(job);
     case "auditor":
@@ -974,12 +1330,16 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
       return runLibrarian(job);
     case "dreamer":
       return runDreamer(job);
+    case "dreamer_v3":
+      return runDreamerV3(job);
     case "memory_analysis":
       return runMemoryAnalysis(job);
     case "skillforge":
       return runSkillforge(job);
     case "skillforge_refresh":
       return runSkillforgeRefresh(job);
+    case "bootstrap_project_doc":
+      return runBootstrap(job);
   }
 }
 
@@ -1087,12 +1447,14 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
     do {
       maybeEnqueueDailyAnalysisJob();
       maybeEnqueueAuditorFromScribeBacklog();
+      maybeEnqueueObserverFromScribeBacklog();
+      maybeEnqueueCompressorFromObserverBacklog();
       reconcileProjectWorkingBacklog();
       maybeEnqueueSkillforgeJobs();
       maybeEnqueueSkillforgeRefresh();
       scavengeStaleBuffers();
       cleanupOrphanSnapshots();
-      requeueStaleRunningJobs(30 * 60_000);
+      requeueStaleRunningJobs(5 * 60_000);
 
       if (!hasRunningGraphLevelJob()) {
         try {
@@ -1121,19 +1483,9 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
       const graphLevelBlocked = hasRunningGraphLevelJob();
 
       while (inFlight.size < concurrency) {
-        const job = claimNextJob();
+        const blockedTypes = graphLevelBlocked ? GRAPH_LEVEL_TYPES : undefined;
+        const job = claimNextJob(blockedTypes);
         if (!job) break;
-
-        if (GRAPH_LEVEL_TYPES.has(job.type) && graphLevelBlocked) {
-          const queuedPath = path.join(CONFIG.paths.jobsQueued, `${job.id}.json`);
-          const runningPath = path.join(CONFIG.paths.jobsRunning, `${job.id}.json`);
-          if (fs.existsSync(runningPath)) {
-            const j = JSON.parse(fs.readFileSync(runningPath, "utf-8"));
-            fs.writeFileSync(queuedPath, JSON.stringify({ ...j, state: "queued", updatedAt: new Date().toISOString() }, null, 2));
-            fs.unlinkSync(runningPath);
-          }
-          break;
-        }
 
         const jobPromise = processJob(job)
           .then(() => { completeRunningJob(job); })
