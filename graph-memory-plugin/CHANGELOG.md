@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased — Notion Sync Pipeline + Dashboard Enhancements
+
+### Notion Sync Pipeline (new)
+
+Two-way sync between graph-memory and a Notion workspace. Disk is agent-readable source of truth; Notion is a human-readable presentation layer ("Company Database of My Mind").
+
+**Outbound sync:**
+- Knowledge nodes grouped into wiki pages by category (patterns, architecture, preferences, archive, etc.)
+- Decisions and briefs become database rows in dedicated databases
+- Each project gets its own Notion page with project-specific content
+- Chunked sync: 100 items per batch, sorted by confidence (highest first), daemon auto-enqueues next batch
+- State file (`.notion-sync-state.json`) tracks page IDs, content hashes, and sync timestamps
+- Diff-based: only changed items are synced
+
+**Inbound sync:**
+- Detects human edits in Notion pages and database rows
+- Creates observations and deltas (never direct node mutations)
+- Preserves the agent as the authority for graph structure
+
+**Three-way merge:**
+- When both graph and Notion have changed, human intent wins
+- Agent information is preserved as callouts in the merged content
+- Merge conflicts logged for review
+
+**Consolidation:**
+- Merges batched wiki-group pages into single category pages
+- Archives the source batched pages after merge
+- Reduces workspace page count (e.g. 63→31 pages in production)
+
+**Infrastructure:**
+- `notion-cli.ts` — CLI adapter wrapping `ntn` for all Notion API calls
+- `notion-sync.ts` — State I/O, diff building, sync plan types, plan execution
+- `notion-inbound.ts` — Inbound edit detection and merge I/O
+- `notion-setup.ts` — Workspace setup with schema-aware property configuration
+- `daemon.ts` — Job dispatch (`notion_sync`, `notion_inbound`, `notion_merge`), daily trigger
+- `job-schema.ts` — `NotionSyncJobPayload` with `batchIndex` for chunked sync
+- MCP actions: `notion_setup`, `notion_sync`, `notion_consolidate`
+- Slash commands for Claude Code and OpenCode: `/notion-setup`, `/notion-sync`, `/notion-consolidate`
+- Agent instructions: `agents/memory-notion-sync.md`, `agents/memory-notion-inbound.md`, `agents/memory-notion-merge.md`
+- Uses Notion API v2026-03-11 with data sources for property management
+- Design spec: `docs/notion-sync-spec.md`
+- 48 tests in `tests/notion-sync.check.mjs`
+
+### Dashboard Enhancements
+
+- **Skills viewer** — new Skills section on the landing page with a card grid showing all generated skills (name, score, project, source node, refresh count). Click any card to expand and read the full slash command markdown content.
+- **Notion Sync pipeline step** — step 7 in the pipeline flow diagram with purple accent. Pipeline cutoffs show sync status (enabled/disabled, last sync time, page/row counts, in-flight state, next scheduled sync hour).
+- **Skills content endpoint** — `GET /api/skills/:name/content` reads the actual command file from the project directory.
+- **Dashboard resilience** — `readAllJobs` now handles unknown job types with dynamic fallback instead of crashing.
+
+### Pipeline Resilience Fixes
+
+- Observer `processObserverOutputs` failed on stale observation files from prior runs — files are now unlinked after error
+- `appendSessionLog` threw ENOENT for project names with `/` — parent directories are now ensured
+- `normalizeBullet` in working update threw `text.replace is not a function` on non-string values — now guarded
+- Decay archival stalled by over-broad category protection — archive targets are no longer skipped
+- `reconcileProjectWorkingBacklog()` re-processed scribe jobs with invalid project paths (`private/tmp`) — now skips projects starting with `private/`, `tmp/`, or `/`
+
+---
+
 ## 2.4.0 (2026-05-14) — Mental Model Architecture + Pipeline Improvements
 
 ### Mental Model System (folded into v2 pipeline)
