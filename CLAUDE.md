@@ -20,7 +20,12 @@ Legacy/reference material:
 ```text
 graph-memory-plugin/
   src/graph-memory/       # Core graph logic, runtime, inputs, pipeline
-    pipeline/             # daemon, queue, graph ops, librarian, dreamer, preflight
+    pipeline/             # daemon, queue, graph ops, librarian, dreamer, observer, compressor
+    mind/                 # v3 Layer 1: global mental model (model.json, whisper.txt, observations)
+    lenses/               # v3 Layer 2: project models and whispers
+    sessions/             # v3 Layer 3: session logs
+    adapters/             # Harness adapters (claude-code, opencode, pi, codex)
+    scripts/              # Migration and utility scripts
   src/hooks/              # Claude Code hooks
   agents/                 # Background agent instruction files
   commands/               # Slash command specs (Claude Code)
@@ -32,20 +37,31 @@ graph-memory-plugin/
   bin/                    # Install, runtime, Docker, and hook shell wrappers
 
 memory-dashboard/
-  server.ts               # Express API server (port 3001)
+  server.ts               # Express API server (port 3001) with SSE event stream
   src/                    # React frontend (Vite, port 5173)
-    components/           # Graph, jobs, logs, briefs, and context viewers
+    components/           # Graph explorer, architecture view, session replay
     lib/api.ts            # Typed API client
+    styles.css            # OKLCH design system
 
 ~/.graph-memory/          # The actual graph data (outside this repo)
-  nodes/                  # Active knowledge nodes
+  nodes/                  # Active knowledge nodes (v2)
+  graph/                  # v3 graph (nodes + .index.json)
+  mind/                   # v3 global mental model
+    model.json            # cognitive style, preferences, guardrails
+    whisper.txt           # pre-generated injection paragraph
+    observations.jsonl    # append-only observation feed
+  lenses/                 # v3 project models
+    {project}/            # model.json, whisper.txt, observations.jsonl
+  sessions/               # v3 session logs
+    {project}.jsonl
   archive/                # Archived nodes
   dreams/                 # pending/, integrated/, archived/
   briefs/                 # Daily brief outputs
+  working/                # Per-project working state with key files
   .deltas/                # Scribe output
   .jobs/                  # Background queue state
   .pipeline-logs/         # Worker logs
-  MAP.md, PRIORS.md, SOMA.md, WORKING.md, DREAMS.md  # Context files
+  MAP.md, PRIORS.md, SOMA.md, WORKING.md, DREAMS.md  # v2 context files
 ```
 
 ## Build & Verify
@@ -60,20 +76,43 @@ cd memory-dashboard && npx tsc --noEmit
 
 The memory system runs automatically via hooks (Claude Code) or plugin events (OpenCode):
 
+### Active Pipeline (scribe → auditor → librarian → dreamer)
+
+The v2 pipeline is the active, proven pipeline. All four prompts were improved to capture "true memory" — evolving opinions, frustrations, contradictions — not just hard facts.
+
 1. **Session hooks** capture startup context, user prompts, assistant responses, and tool traces.
 2. **Scribe** extracts deltas from buffered session state.
-3. **Auditor** does mechanical triage and produces structured recommendations.
-4. **Librarian** applies judgment-heavy graph updates and regenerates context files.
+3. **Auditor** does mechanical triage: stale/contradictory node detection, noise/bloat candidates, structured recommendations.
+4. **Librarian** applies judgment-heavy graph updates with a prune-over-preserve philosophy. Regenerates context files.
 5. **Dreamer** creates speculative cross-node fragments.
 6. **Git** records graph history for rollback.
 
-Context files loaded at session start:
+### Session Start (merged v2 + mental model)
 
-- **PRIORS.md** — Cognitive model (how the agent should think)
-- **SOMA.md** — Emotional engagement calibration
-- **MAP.md** — Compressed knowledge index
-- **WORKING.md** — Volatile working memory
-- **DREAMS.md** — Pending dream fragments
+Session-start uses a tiered strategy:
+
+- **If `GRAPH_MEMORY_V3=1` and whisper data exists** — compressed whispers (~1,100 tokens): global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150
+- **Otherwise (default)** — reads `mind/model.json` directly + MAP + WORKING + PINNED + DREAMS
+
+Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach.
+
+### Mental Model Data
+
+- **Global model** (`mind/model.json`) — cognitive style, decision patterns, preferences, guardrails, emotional profile
+- **Project models** (`lenses/{project}/`) — per-project tech stack, conventions, active work, open threads
+- **Session logs** (`sessions/{project}.jsonl`) — shipped work, decisions, blocked items, next-session hints
+- **Observations** (`mind/observations.jsonl`, `lenses/{project}/observations.jsonl`) — append-only feeds
+
+### v3 Pipeline Stages (code present, not active by default)
+
+Observer, compressor, and dreamer-v3 were built but rolled back after failing to validate in production (worker spawn storms, compressor never triggered). Can be re-enabled with `GRAPH_MEMORY_V3=1`.
+
+### Additional Pipeline Stages
+
+- **Skillforge** — converts high-access nodes into executable slash-command skills
+- **Bootstrap** — auto-generates project docs (CLAUDE.md / AGENT.md) from mental models
+- **Working Update** — extracts key files from tool traces and updates per-project working state
+- **Memory Analysis** — daily brief generation
 
 ## Using The Memory System
 
