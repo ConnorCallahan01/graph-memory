@@ -110,6 +110,7 @@ export function processObserverOutputs(
       fs.unlinkSync(filePath);
     } catch (err: any) {
       result.errors.push(`Error processing ${file}: ${err.message}`);
+      try { fs.unlinkSync(filePath); } catch { /* already gone */ }
     }
   }
 
