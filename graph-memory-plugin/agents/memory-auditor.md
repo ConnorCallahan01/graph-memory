@@ -24,7 +24,7 @@ Read:
 - `{graphRoot}/.preflight-report.json`
 - `{graphRoot}/MAP.md` for context
 - All `.json` files from `{graphRoot}/.deltas/` (excluding `audited/`)
-- `{graphRoot}/nodes/index.json` — this is the index file. Each entry has a `gist` field.
+- `{graphRoot}/.index.json` — this is the index file. Each entry has a `gist` field.
 
 Pay special attention to **mark_stale** deltas — the scribe flags that a node contradicts recent conversation.
 
@@ -32,11 +32,11 @@ Pay special attention to **mark_stale** deltas — the scribe flags that a node 
 
 #### A. Gist Compression (HIGHEST PRIORITY)
 
-Scan every entry in `nodes/index.json`. For each entry where the `gist` exceeds 25 words:
+Scan every entry in `.index.json`. For each entry where the `gist` exceeds 25 words:
 
 1. Read the node's markdown file to understand its content
 2. Rewrite the gist to 15-25 words — concise, information-dense, no filler
-3. Edit the `gist` field in `index.json`
+3. Edit the `gist` field in `.index.json`
 4. Also update the `gist` in the node's YAML frontmatter if present
 
 Rules for compressed gists:

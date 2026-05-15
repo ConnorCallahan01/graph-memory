@@ -22,8 +22,9 @@ import { readActiveProject } from "./project.js";
 import { countJobs, enqueueJob, hasActiveJob } from "./pipeline/job-queue.js";
 import { getRuntimeStatus, GraphMemoryRuntimeMode, saveRuntimeConfig, WorkerProvider } from "./runtime.js";
 import { readNotionSyncState, writeNotionSyncState, createEmptyNotionSyncState, consolidateNotionWorkspace } from "./pipeline/notion-sync.js";
-import { checkNtn, createPage as notionCreatePage, createDatabase, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA } from "./pipeline/notion-cli.js";
+import { checkNtn, createPage as notionCreatePage, createDatabaseRow, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA } from "./pipeline/notion-cli.js";
 import { setupNotionWorkspace } from "./pipeline/notion-setup.js";
+import { addNotionPickupItem } from "./project-working.js";
 
 // --- Index cache ---
 let indexCache: { data: any[]; mtime: number } | null = null;
@@ -112,9 +113,11 @@ export async function handleGraphMemory(args: {
       return runNotionSyncAction();
     case "notion_consolidate":
       return runNotionConsolidateAction(args);
+    case "notion_create_task":
+      return runNotionCreateTaskAction(args);
     default:
       return {
-        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap, notion_setup, notion_sync, notion_consolidate` }],
+        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap, notion_setup, notion_sync, notion_consolidate, notion_create_task` }],
         isError: true,
       };
   }
@@ -1212,11 +1215,75 @@ async function runNotionConsolidateAction(args: { dryRun?: boolean; [key: string
   }
 }
 
+// --- notion_create_task action ---
+
+async function runNotionCreateTaskAction(args: { name?: string; project?: string; status?: string; priority?: string; due?: string; [key: string]: any }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  if (!args.name) {
+    return {
+      content: [{ type: "text" as const, text: "Missing required field: name" }],
+      isError: true,
+    };
+  }
+
+  const state = readNotionSyncState();
+  if (!state.parentPageId) {
+    return {
+      content: [{ type: "text" as const, text: "Notion sync not configured. Run notion_setup first." }],
+      isError: true,
+    };
+  }
+
+  const tasksDb = state.databases.tasks;
+  if (!tasksDb?.id) {
+    return {
+      content: [{ type: "text" as const, text: "Tasks database not found. Run notion_setup first." }],
+      isError: true,
+    };
+  }
+
+  try {
+    const properties: Record<string, any> = {
+      Name: args.name,
+      Status: args.status || "Backlog",
+      Priority: args.priority || "Medium",
+    };
+    if (args.project) properties.Project = args.project;
+    if (args.due) properties.Due = args.due;
+
+    const result = createDatabaseRow(tasksDb.id, properties, undefined, "Name");
+
+    const rowKey = `task:${args.name}`;
+    state.rows[rowKey] = {
+      pageId: result.id,
+      sourceField: "tasks",
+      status: args.status || "Backlog",
+      lastSyncedHash: "",
+    };
+    writeNotionSyncState(state);
+
+    if (args.project) {
+      addNotionPickupItem(args.project, `[Agent → Notion] Created task "${args.name}" (${args.status || "Backlog"})`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Task created in Notion: "${args.name}" (${result.url})`,
+      }],
+    };
+  } catch (err: any) {
+    return {
+      content: [{ type: "text" as const, text: `Failed to create Notion task: ${err.message}` }],
+      isError: true,
+    };
+  }
+}
+
 // Zod schema for the tool (exported for MCP server registration)
 export const graphMemorySchema = {
   action: z.enum([
     "read_node", "search", "recall", "list_edges", "read_dream", "write_note",
-    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap", "notion_setup", "notion_sync", "notion_consolidate"
+    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap", "notion_setup", "notion_sync", "notion_consolidate", "notion_create_task"
   ]).describe("The action to perform on the knowledge graph"),
   path: z.string().optional()
     .describe("Node path for read_node/list_edges/remember, dream path for read_dream, commit hash for revert"),

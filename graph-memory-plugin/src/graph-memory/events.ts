@@ -75,7 +75,15 @@ export type ActivityEventType =
   | "notion-inbound:error"
   | "notion-merge:start"
   | "notion-merge:complete"
-  | "notion-merge:error";
+  | "notion-merge:error"
+  | "notion-sync:comments"
+  | "notion-sync:new-tasks"
+  | "notion-webhook:error"
+  | "notion-webhook:warn"
+  | "notion-webhook:started"
+  | "notion-webhook:task-update"
+  | "notion-webhook:content-update"
+  | "notion-webhook:comment";
 
 export interface ActivityEvent {
   type: ActivityEventType;

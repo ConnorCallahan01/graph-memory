@@ -14,6 +14,7 @@ import { ensureLens, readWhisper as readProjectWhisper, lensExists } from "./len
 import { readRecentSessions } from "./sessions/manager.js";
 import { SessionLog } from "./sessions/types.js";
 import { getAntiPatterns } from "./pipeline/graph-index-v3.js";
+import { getProjectWorkingStatePath } from "./working-files.js";
 
 const MAX_GLOBAL_WHISPER_TOKENS = 400;
 const MAX_PROJECT_WHISPER_TOKENS = 500;
@@ -87,6 +88,16 @@ export function buildV3Context(projectName: string): V3SessionStartResult {
         sources.sessionLog = true;
       }
     }
+
+    const pickupBlock = readNextPickup(projectName);
+    if (pickupBlock) {
+      const tokens = estimateTokens(pickupBlock);
+      const cap = Math.min(100, MAX_TOTAL_TOKENS - tokensUsed);
+      if (tokens <= cap) {
+        parts.push(pickupBlock);
+        tokensUsed += tokens;
+      }
+    }
   }
 
   if (parts.length === 0) {
@@ -146,4 +157,23 @@ export function hasV3Data(): boolean {
   if (!fs.existsSync(mindDir)) return false;
   const whisperPath = path.join(mindDir, "whisper.txt");
   return fs.existsSync(whisperPath);
+}
+
+function readNextPickup(projectName: string): string | null {
+  try {
+    const statePath = getProjectWorkingStatePath(projectName);
+    if (!fs.existsSync(statePath)) return null;
+    const state = JSON.parse(fs.readFileSync(statePath, "utf-8"));
+    const latest = state.sessions?.[0];
+    if (!latest?.nextPickup?.length) return null;
+
+    const items = latest.nextPickup.slice(0, 3);
+    const lines = ["## Pick Up", ""];
+    for (const item of items) {
+      lines.push(`- ${item}`);
+    }
+    return lines.join("\n");
+  } catch {
+    return null;
+  }
 }

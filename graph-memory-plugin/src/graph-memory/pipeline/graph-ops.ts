@@ -160,6 +160,7 @@ const MAP_CATEGORY_PRIORITY = new Map<string, number>([
 ]);
 
 function truncate(text: string, maxChars: number): string {
+  if (typeof text !== "string") text = String(text ?? "");
   const normalized = text.replace(/\s+/g, " ").trim();
   if (normalized.length <= maxChars) return normalized;
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}…`;
@@ -830,7 +831,7 @@ export function rebuildIndex() {
 
       const indexEntry: Record<string, any> = {
         path: nodePath,
-        gist: ((fm.gist || extractFirstParagraph(parsed.content)) as string).slice(0, 200),
+        gist: truncate(fm.gist || extractFirstParagraph(parsed.content), 200),
         tags: (fm.tags || []).map((t: any) => String(t)),
         keywords: (fm.keywords || []).map((k: any) => String(k)),
         edges: (fm.edges || [])
@@ -881,7 +882,7 @@ export function rebuildArchiveIndex() {
 
       index.push({
         path: nodePath,
-        gist: ((fm.gist || extractFirstParagraph(parsed.content)) as string).slice(0, 200),
+        gist: truncate(fm.gist || extractFirstParagraph(parsed.content), 200),
         tags: (fm.tags || []).map((t: any) => String(t)),
         keywords: (fm.keywords || []).map((k: any) => String(k)),
         confidence: typeof fm.confidence === "number" ? fm.confidence : 0.5,

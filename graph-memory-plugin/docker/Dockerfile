@@ -14,6 +14,8 @@ RUN ARCH=$(uname -m) && \
     curl -fsSL "https://github.com/anomalyco/opencode/releases/latest/download/opencode-linux-${GOARCH}.tar.gz" \
     | tar xz -C /usr/local/bin opencode
 
+RUN curl -fsSL https://ntn.dev/install.sh | bash
+
 COPY tsconfig.json ./
 COPY src ./src
 COPY bin ./bin

@@ -22,6 +22,7 @@ export interface NotionSyncPageState {
   sourceNodes: string[];
   lastSyncedHash: string;
   lastNotionHash: string;
+  lastCommentAt?: string;
 }
 
 export interface NotionSyncRowState {
@@ -30,6 +31,8 @@ export interface NotionSyncRowState {
   sourceSession?: string;
   status: string;
   lastSyncedHash: string;
+  lastSourceHash?: string;
+  lastCommentAt?: string;
 }
 
 export interface NotionSyncDatabaseState {
@@ -114,8 +117,9 @@ export function computeContentHash(content: string): string {
 export function buildNotionDiff(state: NotionSyncState): NotionSyncDiff {
   const items: DiffItem[] = [];
   const lastSync = state.lastSyncAt;
+  const lastSyncMs = lastSync ? new Date(lastSync).getTime() : 0;
 
-  scanGraphNodes(state, items);
+  scanGraphNodes(state, items, lastSyncMs);
   scanGlobalModel(state, items);
   scanProjectModels(state, items);
   scanSessionLogs(state, items, lastSync);
@@ -177,40 +181,67 @@ function classifyByHash(
 function lookupSyncedHash(state: NotionSyncState, key: string): string {
   if (state.pages[key]) return state.pages[key].lastSyncedHash;
   if (state.rows[key]) return state.rows[key].lastSyncedHash;
+  const normalizedKey = normalizeSourceNodeToNodePath(key);
   for (const pageState of Object.values(state.pages)) {
+    for (const src of pageState.sourceNodes) {
+      if (normalizeSourceNodeToNodePath(src) === normalizedKey) return pageState.lastSyncedHash;
+    }
     if (pageState.sourceNodes.includes(key)) return pageState.lastSyncedHash;
   }
   return "";
 }
 
-function scanGraphNodes(state: NotionSyncState, items: DiffItem[]): void {
+function normalizeSourceNodeToNodePath(src: string): string {
+  return src
+    .replace(/^graph\//, "")
+    .replace(/^nodes\//, "")
+    .replace(/\.md$/, "");
+}
+
+function scanGraphNodes(state: NotionSyncState, items: DiffItem[], lastSyncMs: number): void {
   const graphDir = CONFIG.paths.v3Graph;
   if (!fs.existsSync(graphDir)) return;
 
-  const syncedHashes: Record<string, string> = {};
-  for (const [, pageState] of Object.entries(state.pages)) {
+  const knownRows = new Set(Object.keys(state.rows));
+  const knownPageSources = new Set<string>();
+  for (const pageState of Object.values(state.pages)) {
     for (const src of pageState.sourceNodes) {
-      if (!src.includes("*")) syncedHashes[src] = pageState.lastSyncedHash;
+      knownPageSources.add(normalizeSourceNodeToNodePath(src));
     }
   }
 
   for (const { nodePath, filePath } of walkNodes(graphDir)) {
     const content = fs.readFileSync(filePath, "utf-8");
     const hash = computeContentHash(content);
-
     const batch = inferNodeBatch(nodePath);
-    const classification = classifyByHash(nodePath, hash, syncedHashes);
-
     let parsedData: Record<string, any> = {};
-    try {
-      parsedData = matter(content).data || {};
-    } catch {}
+    try { parsedData = matter(content).data || {}; } catch {}
 
     const archived = parsedData.archived === true;
+    let classification: DiffClassification;
+
+    if (archived) {
+      classification = "archived";
+    } else {
+      const isKnown = knownRows.has(nodePath) || knownPageSources.has(nodePath);
+      const storedSourceHash = state.rows[nodePath]?.lastSourceHash;
+      if (storedSourceHash) {
+        classification = storedSourceHash === hash ? "unchanged" : "updated";
+      } else if (isKnown) {
+        if (lastSyncMs > 0) {
+          const stat = fs.statSync(filePath);
+          classification = stat.mtimeMs > lastSyncMs ? "updated" : "unchanged";
+        } else {
+          classification = "unchanged";
+        }
+      } else {
+        classification = "new";
+      }
+    }
 
     items.push({
       key: nodePath,
-      classification: archived ? "archived" : classification,
+      classification,
       batch,
       filePath,
       contentHash: hash,
@@ -538,7 +569,15 @@ export function executeNotionSync(
   for (const item of plan.updates) {
     try {
       if (item.type === "wiki_page") {
-        updatePage(item.notionPageId, item.markdown || "");
+        try {
+          updatePage(item.notionPageId, item.markdown || "");
+        } catch (replaceErr: any) {
+          if (replaceErr.message?.includes("child page") || replaceErr.message?.includes("child") || replaceErr.message?.includes("archived")) {
+            appendBlocks(item.notionPageId, [{ type: "paragraph", paragraph: { rich_text: [{ type: "text", text: { content: "## Updated\n\n" + (item.markdown || "").slice(0, 1900) } }] } }]);
+          } else {
+            throw replaceErr;
+          }
+        }
         const pageState = state.pages[item.notionKey];
         if (pageState) {
           pageState.lastSyncedHash = computeContentHash(item.markdown || "");

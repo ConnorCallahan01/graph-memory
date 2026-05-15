@@ -26,6 +26,13 @@ interface GraphMemoryLocalConfig {
   externalInputs?: {
     enabled?: boolean;
   };
+  notionSync?: {
+    enabled?: boolean;
+    syncHourLocal?: number;
+    maxBatchSize?: number;
+    skipInbound?: boolean;
+    webhookSecret?: string;
+  };
 }
 
 /**
@@ -240,10 +247,13 @@ function createConfig() {
     },
 
     notionSync: {
-      enabled: (local as any).notionSync?.enabled ?? false,
-      syncHourLocal: (local as any).notionSync?.syncHourLocal ?? 8,
-      maxBatchSize: (local as any).notionSync?.maxBatchSize ?? 30,
-      skipInbound: (local as any).notionSync?.skipInbound ?? false,
+      enabled: local.notionSync?.enabled ?? false,
+      syncHourLocal: local.notionSync?.syncHourLocal ?? 8,
+      maxBatchSize: local.notionSync?.maxBatchSize ?? 30,
+      skipInbound: local.notionSync?.skipInbound ?? false,
+      webhookSecret: local.notionSync?.webhookSecret
+        ? local.notionSync.webhookSecret.replace(/^\$\{(\w+)\}$/, (_, v) => process.env[v] || "")
+        : process.env.NOTION_WEBHOOK_SECRET || "",
     },
 
     /** Path to the global config pointer file */

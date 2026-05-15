@@ -21,14 +21,12 @@ let _initializeGraph: any;
 let _CONFIG: any;
 let _isGraphInitialized: any;
 let _enqueueJob: any;
-let _overlap: any;
-let _recencyBoost: any;
 let _somaBoost: any;
-let _projectBoost: any;
 let _updateLastAccessed: any;
 let _detectProject: any;
 let _writeActiveProject: any;
 let _removeActiveProject: any;
+let _ambientRecall: any;
 
 async function loadCore() {
   if (_handleGraphMemory) return;
@@ -57,10 +55,8 @@ async function loadCore() {
   _CONFIG = config.CONFIG;
   _isGraphInitialized = config.isGraphInitialized;
   _enqueueJob = jobQueue.enqueueJob;
-  _overlap = scoring.overlap;
-  _recencyBoost = scoring.recencyBoost;
   _somaBoost = soma.somaBoost;
-  _projectBoost = scoring.projectBoost;
+  _ambientRecall = scoring.ambientRecall;
   _updateLastAccessed = tools.updateLastAccessed;
   _detectProject = project.detectProject;
   _writeActiveProject = project.writeActiveProject;
@@ -141,37 +137,6 @@ export const GraphMemoryPlugin: Plugin = async ({ project, client, directory, wo
     }
   }
 
-  // ── Ambient auto-recall helpers ──────────────────────────────────
-  const STOPWORDS = new Set([
-    "a","an","the","is","are","was","were","be","been","being",
-    "have","has","had","do","does","did","will","would","could",
-    "should","may","might","can","shall","to","of","in","for",
-    "on","with","at","by","from","as","into","about","but","or",
-    "and","not","no","so","if","then","than","that","this","it",
-    "i","me","my","we","our","you","your","he","she","they",
-    "what","how","when","where","why","which","who","whom",
-  ]);
-
-  function categoryGateWeight(nodePath: string): number {
-    const category = nodePath.split("/")[0] || "";
-    switch (category) {
-      case "preferences":
-      case "patterns":
-      case "decisions":
-      case "projects":
-      case "procedures":
-      case "people":
-      case "architecture":
-      case "concepts":
-      case "tools":
-        return 1.25;
-      case "dreams":
-        return 0.55;
-      default:
-        return 1.0;
-    }
-  }
-
   function detectCurrentProject(): string | undefined {
     if (!worktree) return undefined;
     if (_detectProject) {
@@ -183,83 +148,17 @@ export const GraphMemoryPlugin: Plugin = async ({ project, client, directory, wo
 
   function ambientRecall(userMessage: string): string | null {
     if (!_CONFIG) return null;
-    const indexPath = _CONFIG.paths.index;
-    if (!fs.existsSync(indexPath)) return null;
-
-    const tokens = userMessage
-      .toLowerCase()
-      .split(/\s+/)
-      .map((t: string) => t.replace(/[^a-z0-9-]/g, ""))
-      .filter((t: string) => t.length > 1 && !STOPWORDS.has(t));
-
-    if (tokens.length < 2) return null;
-
-    let index: any[];
-    try {
-      index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
-    } catch {
-      return null;
-    }
-    if (!Array.isArray(index) || index.length === 0) return null;
-
     const currentProject = detectCurrentProject();
-    const scored = index
-      .map((entry: any) => {
-        const gistTokens = (entry.gist || "").toLowerCase().split(/\s+/);
-        const tagTokens = (entry.tags || []).map((t: any) => String(t).toLowerCase());
-        const keywordTokens = (entry.keywords || []).map((k: any) =>
-          String(k).toLowerCase()
-        );
-        const pathTokens = (entry.path || "")
-          .toLowerCase()
-          .split(/[\/\-_]/);
+    const result = _ambientRecall(userMessage, _CONFIG.paths.index, currentProject, _somaBoost);
+    if (!result.context) return null;
 
-        const gistScore = _overlap(tokens, gistTokens) * 3;
-        const tagScore = _overlap(tokens, tagTokens) * 2;
-        const keywordScore = _overlap(tokens, keywordTokens) * 1;
-        const pathScore = _overlap(tokens, pathTokens) * 1.5;
-        const baseRelevance =
-          (gistScore + tagScore + keywordScore + pathScore) *
-          (entry.confidence || 0.5);
-
-        const relevance =
-          baseRelevance *
-          _recencyBoost(entry.last_accessed) *
-          _somaBoost(entry.soma_intensity || 0) *
-          _projectBoost(entry.project, currentProject) *
-          categoryGateWeight(entry.path || "");
-
-        return {
-          path: entry.path,
-          gist: entry.gist,
-          relevance,
-        };
-      })
-      .filter((e: any) => e.relevance > 0.15)
-      .sort((a: any, b: any) => b.relevance - a.relevance)
-      .slice(0, 3);
-
-    if (scored.length === 0) return null;
-
-    if (_updateLastAccessed && captureSessionId) {
-      for (const r of scored) {
-        try { _updateLastAccessed(r.path, { actionType: "recall", sessionId: captureSessionId }); } catch {}
+    if (_updateLastAccessed && captureSessionId && result.suggestedPaths) {
+      for (const p of result.suggestedPaths) {
+        try { _updateLastAccessed(p, { actionType: "recall", sessionId: captureSessionId }); } catch {}
       }
     }
 
-    const lines = scored.map(
-      (r: any) =>
-        `- **${r.path}** (${r.relevance.toFixed(2)}): ${(r.gist || "").slice(0, 150)}`
-    );
-
-    return [
-      "<graph-memory-context>",
-      "Relevant memory nodes for this message:",
-      ...lines,
-      "",
-      'Use graph_memory(action="read_node", path="...") for full content.',
-      "</graph-memory-context>",
-    ].join("\n");
+    return result.context;
   }
 
   // ── Build context injection block ─────────────────────────────────

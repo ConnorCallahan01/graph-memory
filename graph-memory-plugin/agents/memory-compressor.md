@@ -24,7 +24,7 @@ Your outputs:
 Read these in order:
 1. `mind/model.json` — current global mental model
 2. All files in `.pipeline/observations/` named `obs_*.json` — pending observations from the observer
-3. `nodes/index.json` — the graph index for understanding current node state
+3. `.index.json` — the graph index for understanding current node state
 
 ## Step 2: Fold Observations into Model
 
@@ -71,14 +71,14 @@ If observations indicate a node has been superseded by newer information:
 1. Check if any other node edges reference it
 2. If yes: reattach those edges to the superseding node
 3. Move the superseded node to `archive/` (add `archived_reason: "superseded by {target}"` and `archived_date`)
-4. Remove from `nodes/index.json`
+4. Remove from `.index.json`
 5. Create an edge from the superseding node to the archived path with type `supersedes`
 
 ### B. Create Edges Between Related Nodes
 
 If observations reveal connections between existing nodes that aren't linked:
 1. Add edges in both nodes' frontmatter
-2. Update `nodes/index.json` edge counts
+2. Update `.index.json` edge counts
 
 ### C. Create New Nodes from Strong Observations
 
@@ -86,7 +86,7 @@ If an observation is high-confidence (0.8+) and durable (not session-specific):
 1. Create a new node in the appropriate category
 2. Write proper frontmatter (title, gist, confidence, project if scoped, tags, edges)
 3. Gist must be 15-25 words
-4. Add to `nodes/index.json`
+4. Add to `.index.json`
 
 ### D. Reattach Orphaned Nodes
 

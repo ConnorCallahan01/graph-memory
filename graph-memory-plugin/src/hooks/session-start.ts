@@ -235,22 +235,16 @@ async function main() {
     parts.push(`[graph-memory] Active project: ${project.name} (auto-detected)`);
   }
 
-  // v3 path: try whisper-based injection first
-  if (hasV3Data()) {
-    const v3 = buildV3Context(project.name);
-
-    if (!v3.sources.fallback) {
-      if (v3.context) {
-        console.log(v3.context);
+  // v3 whisper layer (compressed guardrails + style + context from compressor)
+  // This goes at the top of the injection, then v2 knowledge follows
+  let whisperPrefix = "";
+  if (fs.existsSync(path.join(graphRoot, "mind", "whisper.txt"))) {
+    try {
+      const whisperContent = fs.readFileSync(path.join(graphRoot, "mind", "whisper.txt"), "utf-8").trim();
+      if (whisperContent) {
+        whisperPrefix = "# Operational Context\n\n" + whisperContent;
       }
-      console.error("[graph-memory] v3 injection: " + v3.tokensUsed + " tokens" +
-        " (global=" + v3.sources.globalWhisper + ", project=" + v3.sources.projectWhisper +
-        ", sessions=" + v3.sources.sessionLog + ")");
-
-      markDirty(sessionId);
-      writeSessionContextState(sessionId, project.name);
-      return;
-    }
+    } catch { /* fall through */ }
   }
 
   // v2 injection: model.json + MAP + WORKING + PINNED + DREAMS
@@ -344,13 +338,14 @@ async function main() {
     }
   } catch { /* non-critical */ }
 
-  if (parts.length === 0) {
+  if (parts.length === 0 && !whisperPrefix) {
     console.log("[graph-memory] Memory initialized but empty. It will grow from your conversations.");
   } else {
-    console.log(parts.join("\n\n---\n\n"));
+    const allParts = whisperPrefix ? [whisperPrefix, ...parts] : parts;
+    console.log(allParts.join("\n\n---\n\n"));
   }
 
-  console.error(`[graph-memory] Injection: ${totalTokens}/${maxSessionTokens} tokens`);
+  console.error(`[graph-memory] Injection: ${totalTokens}/${maxSessionTokens} tokens (whisper=${whisperPrefix ? "yes" : "no"})`);
 
   // 4. Mark dirty for this session
   markDirty(sessionId);

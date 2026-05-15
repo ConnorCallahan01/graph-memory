@@ -1,6 +1,6 @@
 import express from 'express'
 import cors from 'cors'
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { join, resolve, relative } from 'path'
 import { homedir } from 'os'
 import { watch } from 'chokidar'
@@ -8,6 +8,7 @@ import matter from 'gray-matter'
 import { spawnSync } from 'child_process'
 
 const app = express()
+app.use(express.json())
 const PORT = Number.parseInt(process.env.MEMORY_DASHBOARD_API_PORT || process.env.PORT || '3001', 10)
 
 type JobState = 'queued' | 'running' | 'done' | 'failed'
@@ -97,7 +98,8 @@ const COMMON_BIN_DIRS = [
   '/sbin',
 ]
 
-app.use(cors({ origin: 'http://localhost:5173' }))
+const corsOrigin = process.env.MEMORY_DASHBOARD_CORS_ORIGIN || 'http://localhost:5173'
+app.use(cors({ origin: corsOrigin }))
 
 function getPointerConfigPath(): string {
   return join(homedir(), '.graph-memory-config.yml')
@@ -1414,11 +1416,20 @@ app.get('/api/health', (_req, res) => {
     const edgeSources = new Set<string>()
     const edgeTargets = new Set<string>()
 
-    const graphData = readGraphForDashboard(graphRoot)
-    for (const el of graphData.elements) {
-      if (el.group === 'edges') {
-        edgeSources.add(el.data.source)
-        edgeTargets.add(el.data.target)
+    for (const node of index) {
+      for (const edge of node.edges ?? []) {
+        const target = typeof edge === 'string' ? edge : edge.target
+        if (target) {
+          edgeSources.add(node.path)
+          edgeTargets.add(target)
+        }
+      }
+      for (const edge of node.anti_edges ?? []) {
+        const target = typeof edge === 'string' ? edge : edge.target
+        if (target) {
+          edgeSources.add(node.path)
+          edgeTargets.add(target)
+        }
       }
     }
     const allConnected = new Set([...edgeSources, ...edgeTargets])

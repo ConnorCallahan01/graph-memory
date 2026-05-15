@@ -1141,10 +1141,12 @@ test("inbound: applyInboundDeltas creates observation files", async () => {
     assert.equal(result.errors.length, 0, "No errors");
 
     const mindDir = path.join(graphRoot, "mind");
-    const obsFiles = fs.readdirSync(mindDir).filter((f) => f.startsWith("notion-inbound-") && f.endsWith(".json"));
-    assert.ok(obsFiles.length > 0, "Observation file created");
+    const obsPath = path.join(mindDir, "observations.jsonl");
+    assert.ok(fs.existsSync(obsPath), "Observation jsonl created");
 
-    const obs = JSON.parse(fs.readFileSync(path.join(mindDir, obsFiles[0]), "utf-8"));
+    const obsLines = fs.readFileSync(obsPath, "utf-8").trim().split("\n");
+    assert.ok(obsLines.length > 0, "Observation line written");
+    const obs = JSON.parse(obsLines[0]);
     assert.equal(obs.source, "notion-inbound");
     assert.ok(obs.tags.includes("source:notion-inbound"));
   } finally {

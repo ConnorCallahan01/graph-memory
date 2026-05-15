@@ -19,7 +19,6 @@ import { ensureLens } from "../lenses/manager.js";
 import { safePath } from "../utils.js";
 import { validateEdgeType } from "./graph-ops.js";
 import { ObservationType } from "../mind/types.js";
-import { addToIndex as addToV3Index } from "./graph-index-v3.js";
 
 export interface ObserverToolResult {
   observationsCreated: number;
@@ -175,10 +174,10 @@ function processLogSession(call: LogSessionCall, sessionId: string): void {
 }
 
 function processUpsertNode(call: UpsertNodeCall): void {
-  const categoryDir = path.join(CONFIG.paths.v3Graph, call.category);
+  const categoryDir = path.join(CONFIG.paths.nodes, call.category);
   if (!fs.existsSync(categoryDir)) fs.mkdirSync(categoryDir, { recursive: true });
 
-  const nodePath = safePath(CONFIG.paths.v3Graph, call.path, ".md");
+  const nodePath = safePath(CONFIG.paths.nodes, call.path, ".md");
   if (!nodePath) return;
 
   const now = new Date().toISOString().slice(0, 10);
@@ -219,7 +218,6 @@ function processUpsertNode(call: UpsertNodeCall): void {
       parsed.data.updated = now;
 
       fs.writeFileSync(nodePath, matter.stringify(parsed.content, parsed.data));
-      try { addToV3Index(call.path, nodePath); } catch { /* non-critical */ }
     } catch (err: any) {
       activityBus.log("observer:error", `Failed to update node ${call.path}: ${err.message}`);
     }
@@ -256,5 +254,4 @@ function processUpsertNode(call: UpsertNodeCall): void {
 
   const body = "# " + (call.path.split("/").pop() || call.path) + "\n\n" + (call.content || "");
   fs.writeFileSync(nodePath, matter.stringify(body, fm));
-  try { addToV3Index(call.path, nodePath); } catch { /* non-critical */ }
 }

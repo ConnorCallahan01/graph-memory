@@ -3,7 +3,13 @@ node_modules/
 dist/
 **/dist/
 .env
+.env.*
+!.env.example
 .claude/
 .firecrawl/
+.DS_Store
+**/.DS_Store
 graph/
+graph-memory/
 *.log
+*.tgz

@@ -23,7 +23,9 @@ import { rebuildV3Index } from "./graph-index-v3.js";
 import { bootstrapProjectDoc, detectDocDrift } from "./bootstrap.js";
 import { buildDreamerV3Input, processDreamerV3Outputs } from "./dreamer-v3-tools.js";
 import { readNotionSyncState, writeNotionSyncState, buildNotionDiff, writeDiffReport, readSyncPlan, executeNotionSync } from "./notion-sync.js";
-import { detectInboundEdits, writeInboundInput, readInboundPlan, applyInboundDeltas, writeInboundDeltas, writeMergeInput, readMergeResult, InboundEdit } from "./notion-inbound.js";
+import { detectInboundEdits, writeInboundInput, readInboundPlan, applyInboundDeltas, writeInboundDeltas, writeMergeInput, readMergeResult, detectNewComments, buildCommentDetections, detectNewNotionTasks, InboundEdit } from "./notion-inbound.js";
+import { startWebhookServer } from "./notion-webhook.js";
+import { addNotionPickupItem } from "../project-working.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.resolve(__dirname, "../../../agents");
@@ -372,6 +374,7 @@ function writeDaemonState(status: Record<string, unknown>): void {
 }
 
 function toWorkerPath(filePath: string): string {
+  if (!filePath) return filePath;
   const runtime = loadRuntimeConfig();
   if (runtime.mode !== "docker" || process.env.GRAPH_MEMORY_ROOT !== runtime.docker.graphRootInContainer) {
     return filePath;
@@ -414,7 +417,7 @@ function matchesIsoDateInTimeZone(dateValue: string | number | Date, targetDate:
   return getDatePartsInTimeZone(timeZone, value).date === targetDate;
 }
 
-function collectRecentActivityForDate(targetDate: string, timeZone: string, maxLines = 120): Array<Record<string, unknown>> {
+function collectRecentActivityForDate(targetDate: string, timeZone: string, maxLines = 40): Array<Record<string, unknown>> {
   const activityPath = CONFIG.paths.logs ? path.join(CONFIG.paths.logs, "activity.jsonl") : "";
   if (!activityPath || !fs.existsSync(activityPath)) return [];
 
@@ -439,7 +442,7 @@ function collectJobSummaryForDate(targetDate: string, timeZone: string): Array<R
   const jobs = [...listJobs("done"), ...listJobs("failed"), ...listJobs("running")];
   return jobs
     .filter((job) => matchesIsoDateInTimeZone(job.updatedAt || job.createdAt, targetDate, timeZone))
-    .slice(-80)
+    .slice(-40)
     .map((job) => ({
       id: job.id,
       type: job.type,
@@ -449,8 +452,7 @@ function collectJobSummaryForDate(targetDate: string, timeZone: string): Array<R
       startedAt: job.startedAt,
       completedAt: job.completedAt,
       triggerSource: job.triggerSource,
-      lastError: job.lastError || null,
-      payload: job.payload,
+      lastError: job.lastError ? String(job.lastError).slice(0, 200) : null,
     }));
 }
 
@@ -639,7 +641,18 @@ function createMemoryAnalysisInput(briefDate: string, timeZone: string): string 
     },
   };
 
-  fs.writeFileSync(inputPath, JSON.stringify(payload, null, 2));
+  let json = JSON.stringify(payload, null, 2);
+  const MAX_INPUT_BYTES = 60_000;
+  if (json.length > MAX_INPUT_BYTES) {
+    if (payload.activity_events && Array.isArray(payload.activity_events)) {
+      payload.activity_events = payload.activity_events.slice(-20);
+    }
+    if (payload.jobs && Array.isArray(payload.jobs)) {
+      payload.jobs = payload.jobs.slice(-20);
+    }
+    json = JSON.stringify(payload, null, 2);
+  }
+  fs.writeFileSync(inputPath, json);
   return inputPath;
 }
 
@@ -681,9 +694,6 @@ function maybeEnqueueNotionSync(): void {
   const { date, hour } = getDatePartsInTimeZone(timeZone);
   if (hour < CONFIG.notionSync.syncHourLocal) return;
 
-  const briefPaths = getDailyBriefPaths(date);
-  if (!fs.existsSync(briefPaths.jsonPath) && !fs.existsSync(briefPaths.markdownPath)) return;
-
   if (hasActiveJob("notion_sync") || hasActiveJob("memory_analysis")) return;
 
   if (notionState.lastSyncAt) {
@@ -691,11 +701,15 @@ function maybeEnqueueNotionSync(): void {
     if (elapsed < 20 * 60 * 60 * 1000) return;
   }
 
+  const briefPaths = getDailyBriefPaths(date);
+  const briefAvailable = fs.existsSync(briefPaths.jsonPath) || fs.existsSync(briefPaths.markdownPath);
+
   enqueueJob({
     type: "notion_sync",
     payload: {
       reason: `daily notion sync for ${date}`,
       date,
+      briefAvailable,
     },
     triggerSource: "daemon:daily-notion-sync-schedule",
     idempotencyKey: `notion-sync:${date}`,
@@ -710,6 +724,9 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
     assistantTracePath?: string;
     toolTracePath?: string;
   };
+  if (!payload.snapshotPath || !payload.sessionId) {
+    throw new Error(`Scribe job missing required payload fields (snapshotPath, sessionId)`);
+  }
   const scribePromptPath = path.join(AGENTS_DIR, "memory-scribe.md");
   const deltaCountBefore = countActiveDeltaFiles();
   const deltaStateBefore = getSessionDeltaState(payload.sessionId);
@@ -735,7 +752,7 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 5 * 60_000,
+    timeoutMs: 10 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -764,6 +781,12 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
       project: payload.project || null,
     });
     return;
+  }
+
+  try {
+    regenerateCoreContextFiles(payload.project);
+  } catch (err: any) {
+    activityBus.log("system:error", `WORKING regeneration after scribe failed: ${err.message}`);
   }
 
   if (payload.project && payload.project !== "global") {
@@ -1006,7 +1029,7 @@ async function runAuditor(job: GraphMemoryJob): Promise<void> {
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 12 * 60_000,
+    timeoutMs: 20 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1043,7 +1066,7 @@ async function runLibrarian(job: GraphMemoryJob): Promise<void> {
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 20 * 60_000,
+    timeoutMs: 25 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1078,7 +1101,7 @@ async function runDreamer(job: GraphMemoryJob): Promise<void> {
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 8 * 60_000,
+    timeoutMs: 15 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1111,7 +1134,7 @@ async function runDreamerV3(job: GraphMemoryJob): Promise<void> {
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 8 * 60_000,
+    timeoutMs: 15 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1150,7 +1173,7 @@ async function runMemoryAnalysis(job: GraphMemoryJob): Promise<void> {
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 12 * 60_000,
+    timeoutMs: 20 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1345,6 +1368,36 @@ async function runNotionSync(job: GraphMemoryJob): Promise<void> {
 
   if (!payload.skipInbound && !CONFIG.notionSync.skipInbound) {
     const inboundResult = detectInboundEdits(notionState);
+
+    const commentDetections = detectNewComments(notionState);
+    if (commentDetections.length > 0) {
+      const commentDeltas = buildCommentDetections(commentDetections);
+      const { applied, errors: commentErrors } = applyInboundDeltas(commentDeltas);
+      activityBus.log("notion-sync:comments", `Processed ${applied} new comment(s) from Notion`, {
+        jobId: job.id,
+        commentCount: commentDetections.reduce((sum, d) => sum + d.comments.length, 0),
+      });
+      if (commentErrors.length > 0) {
+        activityBus.log("notion-inbound:error", `Comment processing had ${commentErrors.length} errors`, {
+          jobId: job.id,
+          errors: commentErrors,
+        });
+      }
+    }
+
+    const newNotionTasks = detectNewNotionTasks(notionState);
+    if (newNotionTasks.length > 0) {
+      activityBus.log("notion-sync:new-tasks", `Detected ${newNotionTasks.length} new task(s) created in Notion`, {
+        jobId: job.id,
+        tasks: newNotionTasks.map(t => t.name),
+      });
+      for (const task of newNotionTasks) {
+        if (task.project) {
+          addNotionPickupItem(task.project, `[Notion] New task "${task.name}" (${task.status})`);
+        }
+      }
+    }
+
     writeNotionSyncState(notionState);
 
     if (inboundResult.edits.length > 0) {
@@ -1453,6 +1506,15 @@ async function runNotionSync(job: GraphMemoryJob): Promise<void> {
   }
 
   const syncResult = executeNotionSync(plan, notionState);
+
+  for (const item of chunk) {
+    if (item.classification === "new" || item.classification === "updated") {
+      if (notionState.rows[item.key]) {
+        notionState.rows[item.key].lastSourceHash = item.contentHash;
+      }
+    }
+  }
+
   notionState.lastSyncAt = new Date().toISOString();
   writeNotionSyncState(notionState);
 
@@ -1703,6 +1765,8 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
       return runBootstrap(job);
     case "notion_sync":
       return runNotionSync(job);
+    default:
+      throw new Error(`Unknown job type: ${job.type}`);
   }
 }
 
@@ -1727,11 +1791,13 @@ function cleanupOrphanSnapshots(): void {
     const filePath = path.join(bufferDir, file);
     if (activeSnapshotPaths.has(filePath)) continue;
 
-    const stat = fs.statSync(filePath);
-    if (now - stat.mtimeMs < MAX_AGE_MS) continue;
+    try {
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs < MAX_AGE_MS) continue;
 
-    fs.unlinkSync(filePath);
-    cleaned++;
+      fs.unlinkSync(filePath);
+      cleaned++;
+    } catch {}
   }
 
   if (cleaned > 0) {
@@ -1751,35 +1817,93 @@ function scavengeStaleBuffers(): void {
     if (!file.startsWith("conversation-") || !file.endsWith(".jsonl")) continue;
 
     const filePath = path.join(bufferDir, file);
-    const stat = fs.statSync(filePath);
-    if (now - stat.mtimeMs < maxAgeMs) continue;
+    try {
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs < maxAgeMs) continue;
 
-    const content = fs.readFileSync(filePath, "utf-8").trim();
-    if (!content) {
+      const content = fs.readFileSync(filePath, "utf-8").trim();
+      if (!content) {
+        fs.unlinkSync(filePath);
+        continue;
+      }
+
+      const snapshotName = `snapshot_${Date.now()}.jsonl`;
+      const snapshotPath = path.join(bufferDir, snapshotName);
+      fs.writeFileSync(snapshotPath, content + "\n");
       fs.unlinkSync(filePath);
-      continue;
+
+      enqueueJob({
+        type: "scribe",
+        payload: {
+          snapshotPath,
+          sessionId: `stale_scavenge_${Date.now()}`,
+        },
+        triggerSource: "daemon:stale-buffer-scavenge",
+        idempotencyKey: `scribe:${snapshotPath}`,
+      });
+
+      scavenged++;
+    } catch {
+      try { fs.unlinkSync(filePath); } catch {}
     }
-
-    const snapshotName = `snapshot_${Date.now()}.jsonl`;
-    const snapshotPath = path.join(bufferDir, snapshotName);
-    fs.writeFileSync(snapshotPath, content + "\n");
-    fs.unlinkSync(filePath);
-
-    enqueueJob({
-      type: "scribe",
-      payload: {
-        snapshotPath,
-        sessionId: `stale_scavenge_${Date.now()}`,
-      },
-      triggerSource: "daemon:stale-buffer-scavenge",
-      idempotencyKey: `scribe:${snapshotPath}`,
-    });
-
-    scavenged++;
   }
 
   if (scavenged > 0) {
     activityBus.log("system:info", `Scavenged ${scavenged} stale session buffer(s)`, { scavenged });
+  }
+}
+
+function rotatePipelineLogs(maxAgeDays: number = 30): void {
+  const logDir = CONFIG.paths.pipelineLogs;
+  if (!fs.existsSync(logDir)) return;
+
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  let removed = 0;
+
+  for (const file of fs.readdirSync(logDir)) {
+    if (!file.endsWith(".log") && !file.endsWith(".meta.json")) continue;
+
+    const filePath = path.join(logDir, file);
+    try {
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs.unlinkSync(filePath);
+        removed++;
+      }
+    } catch {
+      fs.unlinkSync(filePath);
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    activityBus.log("system:info", `Rotated ${removed} pipeline log(s) older than ${maxAgeDays} days`);
+  }
+}
+
+function pruneSessionDirectories(maxAgeDays: number = 14): void {
+  const sessionsDir = CONFIG.paths.sessions;
+  if (!fs.existsSync(sessionsDir)) return;
+
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  let removed = 0;
+
+  for (const entry of fs.readdirSync(sessionsDir)) {
+    const entryPath = path.join(sessionsDir, entry);
+    try {
+      const stat = fs.statSync(entryPath);
+      if (!stat.isDirectory()) continue;
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        removed++;
+      }
+    } catch { /* skip */ }
+  }
+
+  if (removed > 0) {
+    activityBus.log("system:info", `Pruned ${removed} session director(ies) older than ${maxAgeDays} days`);
   }
 }
 
@@ -1801,6 +1925,12 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
   process.on("SIGINT", () => { releaseDaemonLock(); process.exit(0); });
   process.on("SIGTERM", () => { releaseDaemonLock(); process.exit(0); });
 
+  if (CONFIG.notionSync.enabled) {
+    startWebhookServer(3100).catch((err: any) => {
+      activityBus.log("notion-webhook:error", `Webhook server failed to start: ${err.message}`);
+    });
+  }
+
   const concurrency = CONFIG.session.daemonConcurrency || 3;
   const inFlight = new Map<string, Promise<void>>();
 
@@ -1808,17 +1938,23 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
 
   try {
     do {
-      maybeEnqueueDailyAnalysisJob();
-      maybeEnqueueNotionSync();
-      maybeEnqueueAuditorFromScribeBacklog();
-      maybeEnqueueObserverFromScribeBacklog();
-      maybeEnqueueCompressorFromObserverBacklog();
-      reconcileProjectWorkingBacklog();
-      maybeEnqueueSkillforgeJobs();
-      maybeEnqueueSkillforgeRefresh();
-      scavengeStaleBuffers();
-      cleanupOrphanSnapshots();
-      requeueStaleRunningJobs(5 * 60_000);
+      try {
+        maybeEnqueueDailyAnalysisJob();
+        maybeEnqueueNotionSync();
+        maybeEnqueueAuditorFromScribeBacklog();
+        maybeEnqueueObserverFromScribeBacklog();
+        maybeEnqueueCompressorFromObserverBacklog();
+        reconcileProjectWorkingBacklog();
+        maybeEnqueueSkillforgeJobs();
+        maybeEnqueueSkillforgeRefresh();
+        scavengeStaleBuffers();
+        cleanupOrphanSnapshots();
+        rotatePipelineLogs();
+        pruneSessionDirectories();
+        requeueStaleRunningJobs(5 * 60_000);
+      } catch (err: any) {
+        activityBus.log("system:error", `Tick housekeeping error: ${err.message}`);
+      }
 
       if (!hasRunningGraphLevelJob()) {
         try {
@@ -1869,6 +2005,10 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
         ]);
       }
     } while (!once);
+  } catch (err: any) {
+    activityBus.log("system:error", `Daemon fatal error: ${err.message}`, {
+      stack: err.stack?.slice(0, 500),
+    });
   } finally {
     if (inFlight.size > 0) {
       activityBus.log("system:info", `Daemon shutting down, waiting for ${inFlight.size} in-flight job(s)`);

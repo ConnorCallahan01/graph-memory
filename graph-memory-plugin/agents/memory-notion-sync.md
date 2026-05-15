@@ -68,6 +68,28 @@ Tasks come from multiple sources. Cluster by intent:
   - `shipped`, `worked`, or git commit match → Status: "Done"
   - No signal in 7+ days → Status: "Backlog"
 
+## Bi-directional Task Handling
+
+The sync is bi-directional. Tasks can originate from:
+1. **Agent sessions** — nextPickup items, openThreads, blocked items from session logs and working state
+2. **Notion** — tasks created directly by the human in the Notion tasks database
+3. **Webhooks** — real-time page.content_updated and comment.created events
+
+When producing a sync plan:
+- **Outbound**: Push agent-originated nextPickup items as new tasks (Status: "Next" or "In Progress")
+- **Inbound**: New rows in the tasks database that have no corresponding `state.rows` entry were created by the human. These are tracked automatically by `detectNewNotionTasks()` and added to working state.
+- **Echo prevention**: The sync state tracks every row ID. Do not re-create rows that already exist in `state.rows`.
+- **Task completion**: When a task moves to "Done" in the agent's working state, update the Notion row Status to "Done" and optionally add a comment via the Comments API.
+- **Max 3 nextPickup** items from working state per sync cycle. Cap at 5 total if webhook items are also present.
+
+## Comments API
+
+Tasks and pages can have comments. The agent can:
+- Read comments: `getComments(blockId)` returns all comments with `createdBy.type` ("person" = human, "bot" = agent)
+- Create comments: `createComment(blockId, markdown)` adds an agent comment
+- Only process human comments (`createdBy.type === "person"`) as inbound signals
+- Agent comments are used for task completion notes and status change context
+
 ## Task Completion via Git
 
 For projects with sessions in the last 24 hours, run:

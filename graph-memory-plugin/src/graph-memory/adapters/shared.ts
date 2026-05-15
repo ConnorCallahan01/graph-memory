@@ -51,6 +51,17 @@ export function buildV2Injection(project: ProjectInfo): string {
 
   try { ensureProjectWorkingFile(project.name); } catch { /* ok */ }
 
+  // v3 whisper layer (compressed guardrails + style + context from compressor)
+  const whisperPath = path.join(CONFIG.paths.graphRoot, "mind", "whisper.txt");
+  try {
+    if (fs.existsSync(whisperPath)) {
+      const whisperContent = fs.readFileSync(whisperPath, "utf-8").trim();
+      if (whisperContent) {
+        parts.push("# Operational Context\n\n" + whisperContent);
+      }
+    }
+  } catch { /* ok */ }
+
   const globalFiles = [
     { filePath: CONFIG.paths.priors, label: "PRIORS" },
     { filePath: CONFIG.paths.soma, label: "SOMA" },

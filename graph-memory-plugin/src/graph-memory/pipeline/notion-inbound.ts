@@ -1,9 +1,11 @@
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
+import matter from "gray-matter";
 import { CONFIG } from "../config.js";
 import { activityBus } from "../events.js";
 import { computeContentHash, NotionSyncState, readNotionSyncState, writeNotionSyncState } from "./notion-sync.js";
-import { getPage } from "./notion-cli.js";
+import { getPage, getComments, searchDatabaseRows } from "./notion-cli.js";
 
 export type InboundEditType =
   | "preference_edit"
@@ -141,6 +143,118 @@ export function detectInboundEdits(state: NotionSyncState): InboundResult {
   return { edits, skipped, errors };
 }
 
+export function detectNewComments(state: NotionSyncState): Array<{ notionKey: string; pageId: string; comments: Array<{ id: string; text: string; createdTime: string }> }> {
+  const results: Array<{ notionKey: string; pageId: string; comments: Array<{ id: string; text: string; createdTime: string }> }> = [];
+  const allEntries: Array<{ key: string; pageId: string; lastCommentAt?: string }> = [
+    ...Object.entries(state.pages).map(([key, ps]) => ({ key, pageId: ps.pageId, lastCommentAt: ps.lastCommentAt })),
+    ...Object.entries(state.rows).map(([key, rs]) => ({ key, pageId: rs.pageId, lastCommentAt: rs.lastCommentAt })),
+  ].filter(e => !!e.pageId);
+
+  for (const entry of allEntries) {
+    try {
+      const comments = getComments(entry.pageId);
+      const humanComments = comments.filter(c => c.createdBy.type === "person");
+      const newComments = entry.lastCommentAt
+        ? humanComments.filter(c => c.createdTime > entry.lastCommentAt!)
+        : humanComments;
+
+      if (newComments.length > 0) {
+        results.push({
+          notionKey: entry.key,
+          pageId: entry.pageId,
+          comments: newComments.map(c => ({ id: c.id, text: c.text, createdTime: c.createdTime })),
+        });
+
+        const latestTime = newComments.reduce((max, c) => c.createdTime > max ? c.createdTime : max, entry.lastCommentAt || "");
+        if (state.pages[entry.key]) {
+          state.pages[entry.key].lastCommentAt = latestTime;
+        } else if (state.rows[entry.key]) {
+          state.rows[entry.key].lastCommentAt = latestTime;
+        }
+      }
+    } catch {
+      // Skip pages where comments API fails (permissions, deleted page)
+    }
+  }
+
+  return results;
+}
+
+export function buildCommentDetections(commentDetections: Array<{ notionKey: string; pageId: string; comments: Array<{ id: string; text: string; createdTime: string }> }>): InboundDelta[] {
+  const deltas: InboundDelta[] = [];
+  for (const detection of commentDetections) {
+    for (const comment of detection.comments) {
+      deltas.push({
+        notionKey: detection.notionKey,
+        editType: "preference_edit",
+        sourceNodes: [],
+        observation: `Human comment on "${detection.notionKey}": ${comment.text}`,
+        targetFile: "",
+        action: "create_observation",
+        payload: { commentId: comment.id, commentTime: comment.createdTime },
+      });
+    }
+  }
+  return deltas;
+}
+
+export function detectNewNotionTasks(state: NotionSyncState): Array<{ name: string; pageId: string; status: string; project: string; priority: string }> {
+  const tasksDb = state.databases.tasks;
+  if (!tasksDb?.id) return [];
+
+  const newTasks: Array<{ name: string; pageId: string; status: string; project: string; priority: string }> = [];
+
+  try {
+    const rows = searchDatabaseRows(tasksDb.id);
+    for (const row of rows) {
+      const pageId = row.id;
+      if (!pageId) continue;
+
+      let alreadyTracked = false;
+      for (const rs of Object.values(state.rows)) {
+        if (rs.pageId === pageId) { alreadyTracked = true; break; }
+      }
+      if (alreadyTracked) continue;
+
+      const props = row.properties || {};
+      const name = extractPropertyText(props, "Name") || "Untitled";
+      const status = extractPropertySelect(props, "Status") || "Backlog";
+      const project = extractPropertySelect(props, "Project") || "";
+      const priority = extractPropertySelect(props, "Priority") || "Medium";
+
+      const rowKey = `task:${name}`;
+      state.rows[rowKey] = {
+        pageId,
+        sourceField: "tasks",
+        status,
+        lastSyncedHash: "",
+      };
+
+      newTasks.push({ name, pageId, status, project, priority });
+    }
+  } catch {
+    // Database query failed — skip
+  }
+
+  return newTasks;
+}
+
+function extractPropertyText(props: Record<string, any>, key: string): string {
+  const prop = props[key];
+  if (!prop) return "";
+  if (prop.title) return prop.title.map((t: any) => t.plain_text || "").join("");
+  if (prop.rich_text) return prop.rich_text.map((t: any) => t.plain_text || "").join("");
+  return "";
+}
+
+function extractPropertySelect(props: Record<string, any>, key: string): string {
+  const prop = props[key];
+  if (!prop) return "";
+  if (prop.select?.name) return prop.select.name;
+  if (prop.status?.name) return prop.status.name;
+  return "";
+}
+
 export function writeInboundDeltas(deltas: InboundDelta[], date: string): string {
   const deltasDir = CONFIG.paths.deltas;
   if (!fs.existsSync(deltasDir)) fs.mkdirSync(deltasDir, { recursive: true });
@@ -219,8 +333,7 @@ export function applyInboundDeltas(deltas: InboundDelta[]): { applied: number; e
           const obsDir = getObservationDir(delta.notionKey);
           if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
 
-          const obsPath = path.join(obsDir, `notion-inbound-${Date.now()}.json`);
-          fs.writeFileSync(obsPath, JSON.stringify({
+          const obsLine = JSON.stringify({
             type: "observation",
             source: "notion-inbound",
             notionKey: delta.notionKey,
@@ -228,60 +341,67 @@ export function applyInboundDeltas(deltas: InboundDelta[]): { applied: number; e
             tags: ["source:notion-inbound"],
             timestamp: new Date().toISOString(),
             ...delta.payload,
-          }, null, 2));
+          });
+          atomicAppendFile(path.join(obsDir, "observations.jsonl"), obsLine + "\n");
           applied++;
           break;
         }
         case "update_node": {
-          if (fs.existsSync(delta.targetFile)) {
-            const existing = fs.readFileSync(delta.targetFile, "utf-8");
-            const updated = existing + "\n\n<!-- notion-inbound update -->\n" + delta.observation;
-            fs.writeFileSync(delta.targetFile, updated);
-            applied++;
-          } else {
+          if (!fs.existsSync(delta.targetFile)) {
             errors.push(`Target file not found: ${delta.targetFile}`);
+            break;
           }
+          const raw = fs.readFileSync(delta.targetFile, "utf-8");
+          if (isArchivedNode(raw)) {
+            break;
+          }
+          const parsed = matter(raw);
+          parsed.content = parsed.content.trimEnd() + "\n\n<!-- notion-inbound update -->\n" + delta.observation;
+          atomicWriteFile(delta.targetFile, matter.stringify(parsed.content, parsed.data));
+          applied++;
           break;
         }
         case "lower_confidence": {
-          if (fs.existsSync(delta.targetFile)) {
-            const raw = fs.readFileSync(delta.targetFile, "utf-8");
-            const updated = raw.replace(
-              /confidence:\s*[\d.]+/,
-              `confidence: ${delta.payload.newConfidence || 0.3}`
-            );
-            fs.writeFileSync(delta.targetFile, updated);
-            applied++;
-          } else {
+          if (!fs.existsSync(delta.targetFile)) {
             errors.push(`Target file not found: ${delta.targetFile}`);
+            break;
           }
+          const raw = fs.readFileSync(delta.targetFile, "utf-8");
+          if (isArchivedNode(raw)) break;
+          const parsed = matter(raw);
+          if (typeof parsed.data.confidence === "number") {
+            parsed.data.confidence = typeof delta.payload.newConfidence === "number"
+              ? delta.payload.newConfidence
+              : 0.3;
+          }
+          atomicWriteFile(delta.targetFile, matter.stringify(parsed.content, parsed.data));
+          applied++;
           break;
         }
         case "update_model": {
-          if (fs.existsSync(delta.targetFile)) {
-            const model = JSON.parse(fs.readFileSync(delta.targetFile, "utf-8"));
-            if (delta.payload.field && delta.payload.value !== undefined) {
-              const parts = String(delta.payload.field).split(".");
-              let target: any = model;
-              for (let i = 0; i < parts.length - 1; i++) {
-                if (!target[parts[i]]) target[parts[i]] = {};
-                target = target[parts[i]];
-              }
-              target[parts[parts.length - 1]] = delta.payload.value;
-            }
-            fs.writeFileSync(delta.targetFile, JSON.stringify(model, null, 2));
-            applied++;
-          } else {
+          if (!fs.existsSync(delta.targetFile)) {
             errors.push(`Model file not found: ${delta.targetFile}`);
+            break;
           }
+          const model = JSON.parse(fs.readFileSync(delta.targetFile, "utf-8"));
+          if (delta.payload.field && delta.payload.value !== undefined) {
+            const parts = String(delta.payload.field).split(".");
+            let target: any = model;
+            for (let i = 0; i < parts.length - 1; i++) {
+              if (!target[parts[i]]) target[parts[i]] = {};
+              target = target[parts[i]];
+            }
+            target[parts[parts.length - 1]] = delta.payload.value;
+          }
+          atomicWriteFile(delta.targetFile, JSON.stringify(model, null, 2));
+          applied++;
           break;
         }
         case "log_conflict": {
           const obsDir = getObservationDir(delta.notionKey);
           if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
 
-          const conflictPath = path.join(obsDir, `notion-merge-conflict-${Date.now()}.json`);
-          fs.writeFileSync(conflictPath, JSON.stringify({
+          const obsLine = JSON.stringify({
             type: "merge_conflict",
             source: "notion-inbound",
             notionKey: delta.notionKey,
@@ -289,7 +409,8 @@ export function applyInboundDeltas(deltas: InboundDelta[]): { applied: number; e
             tags: ["source:notion-inbound", "merge-conflict"],
             timestamp: new Date().toISOString(),
             ...delta.payload,
-          }, null, 2));
+          });
+          atomicAppendFile(path.join(obsDir, "observations.jsonl"), obsLine + "\n");
           applied++;
           break;
         }
@@ -300,6 +421,31 @@ export function applyInboundDeltas(deltas: InboundDelta[]): { applied: number; e
   }
 
   return { applied, errors };
+}
+
+function isArchivedNode(content: string): boolean {
+  try {
+    const parsed = matter(content);
+    return parsed.data.archived === true;
+  } catch {
+    return false;
+  }
+}
+
+function atomicWriteFile(filePath: string, content: string): void {
+  const tmpPath = filePath + ".tmp";
+  fs.writeFileSync(tmpPath, content, "utf-8");
+  fs.renameSync(tmpPath, filePath);
+}
+
+function atomicAppendFile(filePath: string, content: string): void {
+  const tmpPath = filePath + ".tmp";
+  let existing = "";
+  if (fs.existsSync(filePath)) {
+    existing = fs.readFileSync(filePath, "utf-8");
+  }
+  fs.writeFileSync(tmpPath, existing + content, "utf-8");
+  fs.renameSync(tmpPath, filePath);
 }
 
 function hasDiskChanged(state: NotionSyncState, notionKey: string, sourceNodes: string[]): boolean {

@@ -37,6 +37,49 @@ function execNtn(args: string[], options?: { input?: string; timeout?: number })
   }
 }
 
+class NtnApiError extends Error {
+  readonly status: number;
+  readonly retryable: boolean;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.retryable = status === 429 || status === 503;
+  }
+}
+
+export { NtnApiError };
+
+export function execNtnWithRetry(
+  args: string[],
+  options?: { input?: string; timeout?: number },
+  maxRetries: number = 3,
+): string {
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return execNtn(args, options);
+    } catch (err: any) {
+      lastError = err;
+      const status = extractStatusFromError(err);
+      if (status !== 429 && status !== 503) throw err;
+
+      if (attempt < maxRetries) {
+        const baseDelay = 1000 * Math.pow(2, attempt);
+        const jitter = (Math.random() - 0.5) * 400;
+        const delay = Math.max(200, baseDelay + jitter);
+        execSync(`sleep ${delay / 1000}`, { timeout: delay + 1000 });
+      }
+    }
+  }
+  throw lastError;
+}
+
+function extractStatusFromError(err: any): number {
+  const msg = err?.message || "";
+  const match = msg.match(/\b(429|503|400|401|403|404)\b/);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
 export function checkNtnInstalled(): boolean {
   try {
     execSync("which ntn", { encoding: "utf-8", stdio: "pipe" });
@@ -88,7 +131,7 @@ export function createPage(
     }
   }
 
-  const raw = execNtn(["api", "v1/pages", "--data", JSON.stringify(body)], {
+  const raw = execNtnWithRetry(["api", "v1/pages", "--data", JSON.stringify(body)], {
     timeout: NTN_LONG_TIMEOUT,
   });
   const parsed = parseJsonSafe(raw);
@@ -102,7 +145,7 @@ export function updatePage(
   pageId: string,
   markdown: string,
 ): void {
-  execNtn(
+  execNtnWithRetry(
     ["pages", "update", pageId],
     { input: markdown, timeout: NTN_LONG_TIMEOUT },
   );
@@ -113,11 +156,11 @@ export function getPage(pageId: string): string {
 }
 
 export function archivePage(pageId: string): void {
-  execNtn(["api", `v1/pages/${pageId}`, "-X", "PATCH", "in_trash:=true"]);
+  execNtnWithRetry(["api", `v1/pages/${pageId}`, "-X", "PATCH", "in_trash:=true"]);
 }
 
 export function listChildBlocks(pageId: string): any[] {
-  const raw = execNtn(["api", `v1/blocks/${pageId}/children`, "-X", "GET"], {
+  const raw = execNtnWithRetry(["api", `v1/blocks/${pageId}/children`, "-X", "GET"], {
     timeout: NTN_LONG_TIMEOUT,
   });
   const parsed = parseJsonSafe(raw);
@@ -128,7 +171,7 @@ export function appendBlocks(pageId: string, blocks: any[]): void {
   if (blocks.length === 0) return;
   const sanitized = blocks.map(stripReadOnlyFields);
   const body = JSON.stringify({ children: sanitized });
-  execNtn(
+  execNtnWithRetry(
     ["api", `v1/blocks/${pageId}/children`, "-X", "PATCH", "--data", body],
     { timeout: NTN_LONG_TIMEOUT },
   );
@@ -167,7 +210,7 @@ export function createDatabase(
     parent: { type: "page_id", page_id: parentId },
     title: [{ type: "text", text: { content: title } }],
   };
-  const raw = execNtn(["api", "v1/databases", "--data", JSON.stringify(body)], {
+  const raw = execNtnWithRetry(["api", "v1/databases", "--data", JSON.stringify(body)], {
     timeout: NTN_LONG_TIMEOUT,
   });
   const parsed = parseJsonSafe(raw);
@@ -188,7 +231,7 @@ export function configureDataSource(
       body.properties[name] = config;
     }
   }
-  execNtn(
+  execNtnWithRetry(
     ["api", `v1/data_sources/${dataSourceId}`, "-X", "PATCH", "--data", JSON.stringify(body)],
     { timeout: NTN_TIMEOUT },
   );
@@ -214,7 +257,7 @@ export function createDatabaseRow(
   if (childMarkdown) {
     body.children = markdownToBlocks(childMarkdown);
   }
-  const raw = execNtn(["api", "v1/pages", "--data", JSON.stringify(body)], {
+  const raw = execNtnWithRetry(["api", "v1/pages", "--data", JSON.stringify(body)], {
     timeout: NTN_LONG_TIMEOUT,
   });
   const parsed = parseJsonSafe(raw);
@@ -230,7 +273,7 @@ export function updateDatabaseRow(
   titleKey?: string,
 ): void {
   const normalized = normalizeProperties(properties, titleKey);
-  execNtn(
+  execNtnWithRetry(
     ["api", `v1/pages/${pageId}`, "-X", "PATCH", "--data", JSON.stringify({ properties: normalized })],
     { timeout: NTN_TIMEOUT },
   );
@@ -270,7 +313,7 @@ function normalizeProperties(
 }
 
 export function searchPages(query: string): Array<{ id: string; title: string; url: string }> {
-  const raw = execNtn(["api", "v1/search", `query==${query}`, "page_size:=10"]);
+  const raw = execNtnWithRetry(["api", "v1/search", `query==${query}`, "page_size:=10"]);
   const parsed = parseJsonSafe(raw);
   if (!parsed?.results) return [];
   return parsed.results.map((r: any) => ({
@@ -290,7 +333,7 @@ export function searchDatabaseRows(
     : `v1/databases/${databaseId}/query`;
   const body: any = {};
   if (filter) body.filter = filter;
-  const raw = execNtn(
+  const raw = execNtnWithRetry(
     ["api", endpoint, "--data", JSON.stringify(body)],
     { timeout: NTN_LONG_TIMEOUT },
   );
@@ -317,58 +360,251 @@ function extractTitle(page: any): string {
   return "";
 }
 
+export function markdownToRichText(line: string): any[] {
+  const richText: any[] = [];
+  let remaining = line;
+  let currentAnnotations: any = {};
+
+  const patterns: Array<{ regex: RegExp; type: "bold" | "italic" | "code" | "strikethrough" | "link" }> = [
+    { regex: /\*\*(.+?)\*\*/g, type: "bold" },
+    { regex: /(?<!\*)\*([^*]+?)\*(?!\*)/g, type: "italic" },
+    { regex: /`([^`]+?)`/g, type: "code" },
+    { regex: /~~(.+?)~~/g, type: "strikethrough" },
+  ];
+
+  let pos = 0;
+  const segments: Array<{ start: number; end: number; text: string; annotations: any; href?: string }> = [];
+  let safety = 0;
+
+  while (pos < remaining.length && safety < 100) {
+    safety++;
+    let earliest: { index: number; length: number; text: string; annotations: any; href?: string } | null = null;
+
+    for (const { regex, type } of patterns) {
+      regex.lastIndex = pos;
+      const match = regex.exec(remaining);
+      if (match && match.index === pos) {
+        const ann = { ...currentAnnotations };
+        if (type === "bold") ann.bold = true;
+        else if (type === "italic") ann.italic = true;
+        else if (type === "code") ann.code = true;
+        else if (type === "strikethrough") ann.strikethrough = true;
+
+        if (!earliest || match.index < earliest.index) {
+          earliest = { index: match.index, length: match[0].length, text: match[1], annotations: ann };
+        }
+      }
+    }
+
+    const linkMatch = /\[([^\]]+)\]\(([^)]+)\)/g;
+    linkMatch.lastIndex = pos;
+    const lm = linkMatch.exec(remaining);
+    if (lm && lm.index === pos && (!earliest || lm.index <= earliest.index)) {
+      earliest = { index: lm.index, length: lm[0].length, text: lm[1], annotations: { ...currentAnnotations }, href: lm[2] };
+    }
+
+    if (earliest && earliest.index === pos) {
+      segments.push({ start: earliest.index, end: earliest.index + earliest.length, text: earliest.text, annotations: earliest.annotations, href: earliest.href });
+      pos += earliest.length;
+    } else {
+      let nextSpecial = remaining.length;
+      for (const { regex } of patterns) {
+        regex.lastIndex = pos + 1;
+        const m = regex.exec(remaining);
+        if (m && m.index < nextSpecial) nextSpecial = m.index;
+      }
+      linkMatch.lastIndex = pos + 1;
+      const nl = linkMatch.exec(remaining);
+      if (nl && nl.index < nextSpecial) nextSpecial = nl.index;
+
+      const plainText = remaining.slice(pos, nextSpecial);
+      if (plainText) {
+        segments.push({ start: pos, end: nextSpecial, text: plainText, annotations: { ...currentAnnotations } });
+      }
+      pos = nextSpecial;
+    }
+  }
+
+  for (const seg of segments) {
+    if (!seg.text) continue;
+    const rt: any = {
+      type: "text",
+      text: { content: seg.text },
+      annotations: { ...seg.annotations, color: "default" },
+    };
+    if (seg.href) {
+      rt.text = { content: seg.text, link: { url: seg.href } };
+      rt.href = seg.href;
+    }
+    richText.push(rt);
+  }
+
+  if (richText.length === 0 && line.length > 0) {
+    richText.push({ type: "text", text: { content: line }, annotations: { bold: false, italic: false, strikethrough: false, underline: false, code: false, color: "default" } });
+  }
+
+  return richText.slice(0, 100);
+}
+
 export function markdownToBlocks(md: string): any[] {
   const lines = md.split("\n");
   const blocks: any[] = [];
   let i = 0;
+
   while (i < lines.length) {
     const line = lines[i];
-    if (line.startsWith("### ")) {
+
+    if (line.match(/^```(\w*)/)) {
+      const lang = line.match(/^```(\w*)/)?.[1] || "plain text";
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].startsWith("```")) {
+        codeLines.push(lines[i]);
+        i++;
+      }
       blocks.push({
         object: "block",
-        type: "heading_3",
-        heading_3: { rich_text: [{ text: { content: line.slice(4) } }] },
+        type: "code",
+        code: {
+          rich_text: [{ type: "text", text: { content: codeLines.join("\n") } }],
+          language: mapLanguage(lang),
+        },
       });
-    } else if (line.startsWith("## ")) {
+      i++;
+      continue;
+    }
+
+    if (line.match(/^######\s+/)) {
       blocks.push({
-        object: "block",
-        type: "heading_2",
-        heading_2: { rich_text: [{ text: { content: line.slice(3) } }] },
+        object: "block", type: "heading_6",
+        heading_6: { rich_text: markdownToRichText(line.slice(7)) },
       });
-    } else if (line.startsWith("# ")) {
+    } else if (line.match(/^#####\s+/)) {
       blocks.push({
-        object: "block",
-        type: "heading_1",
-        heading_1: { rich_text: [{ text: { content: line.slice(2) } }] },
+        object: "block", type: "heading_5",
+        heading_5: { rich_text: markdownToRichText(line.slice(6)) },
       });
-    } else if (line.startsWith("- ") || line.startsWith("* ")) {
+    } else if (line.match(/^####\s+/)) {
       blocks.push({
-        object: "block",
-        type: "bulleted_list_item",
-        bulleted_list_item: { rich_text: [{ text: { content: line.slice(2) } }] },
+        object: "block", type: "heading_4",
+        heading_4: { rich_text: markdownToRichText(line.slice(5)) },
       });
-    } else if (line.startsWith("> ")) {
+    } else if (line.match(/^###\s+/)) {
       blocks.push({
-        object: "block",
-        type: "quote",
-        quote: { rich_text: [{ text: { content: line.slice(2) } }] },
+        object: "block", type: "heading_3",
+        heading_3: { rich_text: markdownToRichText(line.slice(4)) },
       });
-    } else if (line.startsWith("---")) {
+    } else if (line.match(/^##\s+/)) {
       blocks.push({
-        object: "block",
-        type: "divider",
-        divider: {},
+        object: "block", type: "heading_2",
+        heading_2: { rich_text: markdownToRichText(line.slice(3)) },
       });
+    } else if (line.match(/^#\s+/)) {
+      blocks.push({
+        object: "block", type: "heading_1",
+        heading_1: { rich_text: markdownToRichText(line.slice(2)) },
+      });
+    } else if (line.match(/^\d+\.\s+/)) {
+      const numberedItems: string[] = [];
+      while (i < lines.length && lines[i].match(/^\d+\.\s+/)) {
+        numberedItems.push(lines[i].replace(/^\d+\.\s+/, ""));
+        i++;
+      }
+      for (const item of numberedItems) {
+        blocks.push({
+          object: "block", type: "numbered_list_item",
+          numbered_list_item: { rich_text: markdownToRichText(item) },
+        });
+      }
+      continue;
+    } else if (line.match(/^[-*]\s+\[[ x]\]\s+/)) {
+      const checked = line.match(/\[x\]/i) !== null;
+      const text = line.replace(/^[-*]\s+\[[ x]\]\s+/i, "");
+      blocks.push({
+        object: "block", type: "to_do",
+        to_do: { rich_text: markdownToRichText(text), checked },
+      });
+    } else if (line.match(/^[-*]\s+/)) {
+      const bulletItems: string[] = [];
+      while (i < lines.length && lines[i].match(/^[-*]\s+/) && !lines[i].match(/^[-*]\s+\[[ x]\]/)) {
+        bulletItems.push(lines[i].replace(/^[-*]\s+/, ""));
+        i++;
+      }
+      for (const item of bulletItems) {
+        blocks.push({
+          object: "block", type: "bulleted_list_item",
+          bulleted_list_item: { rich_text: markdownToRichText(item) },
+        });
+      }
+      continue;
+    } else if (line.match(/^>\s?/)) {
+      const quoteLines: string[] = [];
+      while (i < lines.length && lines[i].match(/^>\s?/)) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ""));
+        i++;
+      }
+      blocks.push({
+        object: "block", type: "quote",
+        quote: { rich_text: markdownToRichText(quoteLines.join("\n")) },
+      });
+      continue;
+    } else if (line.match(/^---+/)) {
+      blocks.push({
+        object: "block", type: "divider", divider: {},
+      });
+    } else if (line.match(/^\|/)) {
+      const tableRows: string[][] = [];
+      while (i < lines.length && lines[i].match(/^\|/)) {
+        if (!lines[i].match(/^\|[\s-:|]+\|$/)) {
+          const cells = lines[i].split("|").filter((c, idx, arr) => idx > 0 && idx < arr.length - 1).map(c => c.trim());
+          tableRows.push(cells);
+        }
+        i++;
+      }
+      if (tableRows.length > 0) {
+        const colCount = tableRows[0].length;
+        const hasRowWidth = colCount > 0;
+        const tableBlock: any = {
+          object: "block", type: "table",
+          table: {
+            table_width: colCount,
+            has_row_header: true,
+            has_column_header: false,
+            children: tableRows.map(row => ({
+              object: "block", type: "table_row",
+              table_row: {
+                cells: Array.from({ length: colCount }, (_, ci) =>
+                  [{ type: "text", text: { content: row[ci] || "" } }]
+                ),
+              },
+            })),
+          },
+        };
+        blocks.push(tableBlock);
+      }
+      continue;
     } else if (line.trim()) {
       blocks.push({
-        object: "block",
-        type: "paragraph",
-        paragraph: { rich_text: [{ text: { content: line } }] },
+        object: "block", type: "paragraph",
+        paragraph: { rich_text: markdownToRichText(line) },
       });
     }
     i++;
   }
+
   return blocks;
+}
+
+function mapLanguage(lang: string): string {
+  const map: Record<string, string> = {
+    js: "javascript", ts: "typescript", tsx: "typescript", jsx: "javascript",
+    py: "python", rb: "ruby", sh: "bash", bash: "bash", zsh: "bash",
+    yml: "yaml", yaml: "yaml", json: "json", md: "markdown",
+    sql: "sql", go: "go", rs: "rust", java: "java", kt: "kotlin",
+    css: "css", html: "html", xml: "xml", dockerfile: "docker",
+    toml: "toml", ini: "ini", diff: "diff", plain: "plain text",
+  };
+  return map[lang.toLowerCase()] || "plain text";
 }
 
 export function buildDatabaseProperties(
@@ -439,3 +675,47 @@ export const BRIEFS_DB_SCHEMA = [
   { name: "One Thing Today", type: "rich_text" },
   { name: "Friction Count", type: "number", config: { format: "number" } },
 ];
+
+export interface NotionComment {
+  id: string;
+  createdTime: string;
+  lastEditedTime: string;
+  text: string;
+  createdBy: { id: string; type: string };
+}
+
+export function getComments(blockId: string): NotionComment[] {
+  const raw = execNtnWithRetry(
+    ["api", `v1/comments?block_id=${blockId}`, "-X", "GET"],
+    { timeout: NTN_TIMEOUT },
+  );
+  const parsed = parseJsonSafe(raw);
+  if (!parsed?.results) return [];
+  return parsed.results.map((c: any) => ({
+    id: c.id,
+    createdTime: c.created_time,
+    lastEditedTime: c.last_edited_time,
+    text: (c.rich_text || []).map((rt: any) => rt.plain_text || "").join(""),
+    createdBy: c.created_by || { id: "", type: "" },
+  }));
+}
+
+export function createComment(blockId: string, markdown: string): NotionComment | null {
+  const body = {
+    parent: { page_id: blockId },
+    rich_text: [{ type: "text", text: { content: markdown } }],
+  };
+  const raw = execNtnWithRetry(
+    ["api", "v1/comments", "--data", JSON.stringify(body)],
+    { timeout: NTN_TIMEOUT },
+  );
+  const parsed = parseJsonSafe(raw);
+  if (!parsed) return null;
+  return {
+    id: parsed.id,
+    createdTime: parsed.created_time,
+    lastEditedTime: parsed.last_edited_time,
+    text: (parsed.rich_text || []).map((rt: any) => rt.plain_text || "").join(""),
+    createdBy: parsed.created_by || { id: "", type: "" },
+  };
+}

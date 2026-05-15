@@ -23,28 +23,36 @@ For each edit, diff the current Notion content against the last-synced version t
 
 1. **Never create graph nodes directly.** You create observations and deltas. The normal pipeline (compressor, librarian) decides whether to promote them.
 
-2. **Edit type mapping:**
+2. **Observations are appended to `observations.jsonl`** — not standalone JSON files. This ensures the compressor can consume them for whisper updates.
+
+3. **Edit type mapping:**
 
 | What Changed | Your Action |
 |---|---|
-| Modified preference text | `update_node` — update the relevant preference node's content |
-| Added a new paragraph/section | `create_observation` — create observation tagged `source:notion-inbound` |
-| Deleted/removed content | `lower_confidence` — lower confidence on the related node to 0.3 |
-| Changed task status to "Done" | `create_observation` — note task completion for session log |
+| Modified preference text | `update_node` — update the relevant node content (YAML frontmatter is preserved) |
+| Added a new paragraph/section | `create_observation` — appended to `observations.jsonl` tagged `source:notion-inbound` |
+| Deleted/removed content | `lower_confidence` — lower confidence on the related node (frontmatter `confidence` field updated safely) |
+| Changed task status to "Done" | `create_observation` — note task completion for session log + add to working state |
 | Changed task status to "Blocked" | `create_observation` — note blocker with context |
 | Changed project page "Conventions" | `update_model` — update project model conventions |
 | Changed guardrails (critical) | `update_model` — always apply, these are safety boundaries |
 | Added entirely new content with no obvious source | `create_observation` — tagged for compressor evaluation |
+| Human comment on page/row | `create_observation` — comment text appended to `observations.jsonl` |
+| New task created in Notion | Auto-tracked by `detectNewNotionTasks()` — added to working state `nextPickup` |
 
-3. **For `update_model` actions:** set `targetFile` to the model JSON path and `payload.field` to the dot-path of the field to update.
+4. **For `update_model` actions:** set `targetFile` to the model JSON path and `payload.field` to the dot-path of the field to update. Writes are atomic (`.tmp` + rename).
 
-4. **For `update_node` actions:** set `targetFile` to the node's markdown file path.
+5. **For `update_node` actions:** set `targetFile` to the node's markdown file path. The system preserves YAML frontmatter — you don't need to handle it.
 
-5. **For merge_needed edits:** note the conflict but still produce a delta. The merge agent handles the actual three-way merge separately. Use `log_conflict` action.
+6. **For merge_needed edits:** note the conflict but still produce a delta. The merge agent handles the actual three-way merge separately. Use `log_conflict` action.
 
-6. **Observation content should be factual and concise.** Capture what changed, not interpretation.
+7. **Observation content should be factual and concise.** Capture what changed, not interpretation.
 
-7. **Tag all observations** with `source:notion-inbound` so the pipeline can track them.
+8. **Tag all observations** with `source:notion-inbound` so the pipeline can track them.
+
+9. **Skip archived nodes.** If a node has `archived: true` in its YAML frontmatter, the system skips it automatically.
+
+10. **Comments are filtered.** Only human comments (`createdBy.type === "person"`) become observations. Bot/agent comments are ignored.
 
 ## Output
 
