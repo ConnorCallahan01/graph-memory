@@ -241,7 +241,7 @@ npm install && npm run dev
 - **Architecture view** — inspect your mental model, project models, whisper paragraphs, inject flow
 - **Graph explorer** — interactive node graph with inline editing
 - **Session replay** — per-session event timeline with tool traces and delta previews
-- **Activity rail** — real-time SSE feed of pipeline events, jobs, and health metrics
+- **Pipeline status** — real-time view of scribe → auditor → librarian → dreamer chain
 - **Dream actions** — accept or reject speculative associations
 - **Memory health** — node count, average confidence, category coverage, staleness score
 

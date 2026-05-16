@@ -1,6 +1,74 @@
 # Changelog
 
-## Unreleased — Notion Sync Pipeline + Dashboard Enhancements
+## Unreleased — Lifecycle Audit Hardening
+
+### Daemon Crash Resilience (P0 fixes)
+
+The daemon main loop had no catch block — any tick-level error permanently killed the daemon. Three compounding bugs made this likely:
+
+1. **Tick housekeeping wrapped in try/catch** — `scavengeStaleBuffers()`, `cleanupOrphanSnapshots()`, `reconcileProjectWorkingBacklog()`, and all other tick functions now run inside a try/catch so a single file I/O error doesn't terminate the daemon.
+2. **Per-file I/O guarded** — `scavengeStaleBuffers()` and `cleanupOrphanSnapshots()` wrapped each file iteration in try/catch (TOCTOU race: file deleted between `readdirSync` and subsequent `statSync`/`readFileSync`).
+3. **Outer daemon catch added** — safety net catch block added to the daemon loop so fatal errors log and clean up instead of crashing silently.
+
+### Ambient Recall Deduplication
+
+`STOPWORDS`, pattern arrays (`EXPLICIT_MEMORY_PATTERNS`, `CONTINUITY_PATTERNS`, `PREFERENCE_PATTERNS`, `REPO_OPERATING_CONTEXT_PATTERNS`), `pathCategory()`, `categoryGateWeight()`, `countMatches()`, and the full `ambientRecall()` function extracted from three files into `src/graph-memory/scoring.ts`:
+
+- `src/hooks/on-user-message.ts` — ~175 lines removed, imports from shared module
+- `extensions/graph-memory.ts` (pi) — ~110 lines removed, thin `doAmbientRecall()` wrapper
+- `extensions/graph-memory-opencode.ts` — ~80 lines removed, preserves `detectCurrentProject()` and `_updateLastAccessed` post-processing
+
+### v2/v3 Merge Completion
+
+- Observer `upsert_node` redirected from `CONFIG.paths.v3Graph` to `CONFIG.paths.nodes`
+- Diverged `graph/` directory archived to `archive/v3-graph-backup/`
+- Whisper injected as prefix before v2 context at session start (not gated by `hasV3Data()`)
+- `GRAPH_MEMORY_V3=1` added to Docker environment
+
+### Pipeline Hardening
+
+- **Worker timeouts increased** — scribe 5→10m, auditor 12→20m, librarian 20→25m, dreamer 8→15m
+- **Pipeline log rotation** — 30-day default, cleans `.log` and `.meta.json` files
+- **Session pruning** — 14-day max age on session directories
+- **WORKING.md regeneration** — runs after every scribe completion
+- **`processJob()` default case** — unknown job types now throw instead of silently marking as done
+- **Scribe payload validation** — required fields (`snapshotPath`, `sessionId`) checked before processing
+- **`toWorkerPath()` null guard** — handles undefined input without crashing
+
+### Type Safety Fixes
+
+- **`truncate()` type guard** — handles non-string frontmatter gists that caused `text.replace is not a function`
+- **`extractFirstParagraph()` type guard** — handles non-string content
+- **Index entry gist** — uses `truncate()` instead of raw `.slice()` with cast, preventing crashes on non-string gists
+
+### Dashboard
+
+- Removed dead `ActivityPanel.tsx` (332 lines, never imported)
+- CORS origin configurable via `MEMORY_DASHBOARD_CORS_ORIGIN` env var (default: `localhost:5173`)
+
+### Notion Sync
+
+- Webhook secret externalized to `${NOTION_WEBHOOK_SECRET}` env var in config
+- Docker passthrough configured in `docker-start.sh`
+- Webhook server starts when Notion sync is enabled (no longer requires secret to be set)
+- Port 3100 exposed in Docker
+- `skipInbound` configurable in config.yml (default: false)
+
+### Dead Code Removed
+
+- `src/graph-memory/pipeline/spawn.ts`
+- `src/graph-memory/pipeline/observer.ts` (shell, logic in `observer-tools.ts`)
+- `src/graph-memory/pipeline/compressor.ts` (shell, logic in `compressor-tools.ts`)
+
+### Configuration
+
+- `plugin.json` updated to v3.0.0 with all 7 commands and 9 agents registered
+- `install.sh` symlinks all 12 commands
+- `.gitignore` updated: `.DS_Store`, `graph-memory/`, `.env` patterns
+
+---
+
+## 3.0.0 (2026-05-15) — Notion Sync Pipeline + Dashboard Enhancements
 
 ### Notion Sync Pipeline (new)
 

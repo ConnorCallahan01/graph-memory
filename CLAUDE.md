@@ -45,8 +45,7 @@ memory-dashboard/
     styles.css            # OKLCH design system
 
 ~/.graph-memory/          # The actual graph data (outside this repo)
-  nodes/                  # Active knowledge nodes (v2)
-  graph/                  # v3 graph (nodes + .index.json)
+  nodes/                  # Active knowledge nodes (canonical store)
   mind/                   # v3 global mental model
     model.json            # cognitive style, preferences, guardrails
     whisper.txt           # pre-generated injection paragraph
@@ -64,7 +63,8 @@ memory-dashboard/
   .pipeline-logs/         # Worker logs
   .skillforge/            # Generated skill manifests
   .notion-sync-state.json # Notion workspace sync state
-  MAP.md, PRIORS.md, SOMA.md, WORKING.md, DREAMS.md  # v2 context files
+  MAP.md, WORKING.md, DREAMS.md          # Context files (PRIORS.md/SOMA.md replaced by mental model)
+  archive/v3-graph-backup/               # Archived diverged v3 graph directory
 ```
 
 ## Build & Verify
@@ -97,7 +97,16 @@ Session-start uses a tiered strategy:
 - **If `GRAPH_MEMORY_V3=1` and whisper data exists** — compressed whispers (~1,100 tokens): global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150
 - **Otherwise (default)** — reads `mind/model.json` directly + MAP + WORKING + PINNED + DREAMS
 
-Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach.
+Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach. Whisper is injected as prefix before v2 context, not gated by `hasV3Data()`.
+
+### v2/v3 Hybrid Architecture
+
+The system runs a merged v2/v3 hybrid:
+
+- **v2 provides**: knowledge graph (nodes/), MAP, WORKING, DREAMS, pinned nodes, decay, context regeneration
+- **v3 provides**: mental models (mind/), whispers, observations, session logs, project lenses
+- **Single canonical node store**: `nodes/` — the diverged `graph/` directory has been archived to `archive/v3-graph-backup/`
+- Observer still runs but writes nodes to `nodes/` instead of `graph/`
 
 ### Mental Model Data
 
@@ -170,6 +179,9 @@ graph_memory(action="remember", path="patterns/new-pattern", gist="One-sentence 
 - **Git tracks changes** — every consolidation is recoverable
 - **Notion is human-readable mirror** — disk is agent-readable source of truth, Notion is a presentation layer
 - **Notion API v2026-03-11** — properties are managed via data sources, not databases
+- **Shared ambient recall** — `scoring.ts` holds STOPWORDS, patterns, category gates, full `ambientRecall()` — extensions use thin wrappers
+- **Webhook secret via env var** — `${NOTION_WEBHOOK_SECRET}` in config.yml, resolved at runtime
+- **Daemon crash resilience** — tick housekeeping wrapped in try/catch, per-file I/O guarded, unknown job types throw explicit errors
 
 <!-- BEGIN graph-memory plugin section -->
 ## Graph Memory

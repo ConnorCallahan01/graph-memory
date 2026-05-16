@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Ambient recall extracted to shared module** — `scoring.ts` now holds STOPWORDS, pattern arrays, category gates, and the full `ambientRecall()` function. Three files (~365 lines of duplicate code) replaced with thin wrappers importing from the shared module.
+- **v2/v3 merge completed** — single canonical node store (`nodes/`). Observer writes to `nodes/` instead of `graph/`. Diverged `graph/` archived to `archive/v3-graph-backup/`. Whisper injected as prefix before v2 context at session start.
+- **Daemon crash resilience** — tick housekeeping functions wrapped in try/catch so a single file I/O error doesn't terminate the daemon. `scavengeStaleBuffers()` and `cleanupOrphanSnapshots()` per-file operations individually guarded (TOCTOU fix). `processJob()` switch has default case that throws instead of silently succeeding.
+- **Webhook secret externalized** — config now references `${NOTION_WEBHOOK_SECRET}` env var instead of plaintext. Docker passthrough configured in `docker-start.sh`. Webhook server starts when Notion sync is enabled (no longer requires secret to be set).
+- **Worker timeouts increased** — scribe 10m, auditor 20m, librarian 25m, dreamer 15m (were 5m, 12m, 20m, 8m).
+
+### Fixed
+
+- **Daemon crash on missing snapshot path** — `toWorkerPath(undefined)` called `.startsWith` on undefined. Null guard added. Scribe validates required payload fields before processing.
+- **`text.replace is not a function`** — `truncate()` and `extractFirstParagraph()` crashed on non-string frontmatter gists. Type guards added to both functions.
+- **Dashboard crash bugs** — missing `fs` imports, missing `express.json()` middleware, undefined `readGraphForDashboard()` function (all fixed in prior session).
+- **Pipeline log rotation** — added 30-day rotation with per-file cleanup. 11K stale log files (120MB) cleaned on first run.
+- **Session directory pruning** — sessions older than 14 days automatically pruned on daemon tick.
+- **WORKING.md regeneration** — now runs after every scribe completion to keep handoff current.
+
+### Removed
+
+- **Dead code** — `spawn.ts`, `observer.ts` shell, `compressor.ts` shell removed.
+- **Dead component** — `ActivityPanel.tsx` (332 lines, never imported) removed from dashboard.
+
 ### Added
 
 - **Notion sync pipeline** — two-way sync between graph-memory and a Notion workspace for human-readable access to graph state. Outbound mirrors graph state as wiki pages, database rows, and project pages. Inbound detects human edits and creates observations/deltas. Three-way merge with human intent winning. Chunked sync (100/batch), consolidation, daemon daily trigger. MCP actions: `notion_setup`, `notion_sync`, `notion_consolidate`. Slash commands for Claude Code and OpenCode. Design spec: `graph-memory-plugin/docs/notion-sync-spec.md`.
