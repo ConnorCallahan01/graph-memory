@@ -69,11 +69,9 @@ Dream files are JSON (not markdown). Read them from:
 - Decision (title): Clear decision name from the node title
 - Context (rich_text): 1-2 sentence rationale from the node content
 - Date (date): From frontmatter `created` field or directory path
-- Project (select): Infer from the node path (e.g. `decisions/oliver-*` → Oliver, `decisions/openpatient/*` → OpenPatient, `decisions/graph-memory/*` → Graph Memory)
+- Project (relation): Send as a plain string project name (e.g., "Oliver", "OpenPatient"). The sync engine resolves it to the Notion page ID automatically. Do NOT send Confidence — the Decisions database does not have that property.
 
 **Body:** Optional — only if the decision needs more than 2-3 sentences. Most decisions are fine with just properties.
-
-**Relations:** When the Project can be matched to a Projects database row, include `"Project": "project-name"` in properties so the relation links.
 
 ## Finding the Right Notion IDs
 
@@ -116,10 +114,10 @@ Only include items from the diff that fall in your domain. A typical run produce
     {
       "notionPageId": "existing-row-id",
       "type": "database_row",
-      "notionKey": "pattern:patterns/my-pattern",
-      "changedProperties": { "Confidence": 0.9 },
+      "notionKey": "decisions/my-decision",
+      "changedProperties": { "Context": "Updated context" },
       "markdown": "",
-      "sourceNodes": ["nodes/patterns/my-pattern.md"],
+      "sourceNodes": ["nodes/decisions/my-decision.md"],
       "mergeStrategy": "replace"
     }
   ],
@@ -133,4 +131,4 @@ Only include items from the diff that fall in your domain. A typical run produce
 }
 ```
 
-Properties use plain strings (except Confidence which is a number). The sync engine converts automatically.
+Properties use plain strings (except Confidence which is a number for Patterns and Dreams only — Decisions does not have Confidence). For Project relations, use the project display name: "Keel3 Oliver Demo" for Keel3, "OpenPatient" for OpenPatient, "Cogni-Code (Graph Memory)" for graph-memory, "Brandywine Buzz" for brandywine-buzz. The sync engine converts automatically.
