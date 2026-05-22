@@ -765,6 +765,14 @@ export function readSyncPlan(): SyncPlan | null {
 
 function buildProjectLookup(state: NotionSyncState): Map<string, string> {
   const lookup = new Map<string, string>();
+  const aliases: Record<string, string[]> = {
+    "ConnorCallahan01__cogni-code": ["cogni-code", "cogni code", "graph memory", "graph-memory"],
+    "Keel3__keel3_oliver_demo": ["oliver", "keel3 oliver demo", "keel3"],
+    "acellushealth__openpatient": ["openpatient", "open patient", "ace engine"],
+    "brandywine-buzz": ["brandywine buzz", "brandywine", "buzz"],
+    "acellushealth__ace-engine-api": ["ace engine api"],
+    "acellushealth__dvc": ["dvc"],
+  };
   for (const [key, row] of Object.entries(state.rows)) {
     if (row.sourceField !== "projects" || !row.pageId) continue;
     const name = key.replace(/^project:/, "");
@@ -773,6 +781,12 @@ function buildProjectLookup(state: NotionSyncState): Map<string, string> {
     if (parts.length === 2) {
       lookup.set(parts[1].toLowerCase(), row.pageId);
       lookup.set(parts[0].toLowerCase() + "/" + parts[1].toLowerCase(), row.pageId);
+    }
+    const projectAliases = aliases[name];
+    if (projectAliases) {
+      for (const alias of projectAliases) {
+        lookup.set(alias.toLowerCase(), row.pageId);
+      }
     }
   }
   return lookup;
@@ -886,7 +900,15 @@ export function executeNotionSync(
         updated++;
       } else if (item.type === "database_row") {
         const rowStateForTitle = state.rows[item.notionKey];
-        const targetDb = rowStateForTitle?.sourceField || item.target || "";
+        let targetDb = rowStateForTitle?.sourceField || item.target || "";
+        if (!targetDb) {
+          const keyToDb: Record<string, string> = {
+            brief: "briefs", task: "tasks", decision: "decisions",
+            pattern: "patterns", dream: "dreams", project: "projects",
+          };
+          const prefix = item.notionKey.split(":")[0];
+          targetDb = keyToDb[prefix] || "";
+        }
         const updateTitleKey = resolveTitleKey(targetDb);
         if (Object.keys(item.changedProperties || {}).length > 0) {
           updateDatabaseRow(item.notionPageId, item.changedProperties || {}, updateTitleKey, targetDb);

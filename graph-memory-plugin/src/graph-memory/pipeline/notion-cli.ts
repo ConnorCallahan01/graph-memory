@@ -320,7 +320,7 @@ function normalizeProperties(
       } else if (["Status", "Priority", "Category"].includes(key)) {
         if (value === "") continue;
         normalized[key] = { select: { name: value } };
-      } else if (["Date", "Due", "First Seen", "Last Active", "Last Updated", "Brief Date"].includes(key)) {
+      } else if (["Date", "Due", "First Seen", "Last Active", "Last Updated", "Brief Date", "Created"].includes(key)) {
         normalized[key] = { date: { start: value } };
       } else {
         normalized[key] = { rich_text: [{ type: "text", text: { content: value } }] };
