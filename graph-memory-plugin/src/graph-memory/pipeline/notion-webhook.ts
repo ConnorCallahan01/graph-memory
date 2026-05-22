@@ -12,6 +12,16 @@ import {
 import { addNotionPickupItem } from "../project-working.js";
 import { detectNewNotionTasks } from "./notion-inbound.js";
 import { searchDatabaseRows } from "./notion-cli.js";
+import { enqueueJob } from "./job-queue.js";
+import { NotionInboundTriagePayload } from "./job-schema.js";
+
+const TRIAGE_WORTHY_EVENTS = new Set([
+  "page.created",
+  "page.content_updated",
+  "page.properties_updated",
+  "page.moved",
+  "comment.created",
+]);
 
 export interface WebhookEvent {
   id: string;
@@ -95,6 +105,49 @@ export function resolveNotionKeyForPageId(state: ReturnType<typeof readNotionSyn
     if (rs.pageId === pageId) return key;
   }
   return null;
+}
+
+function queueTriageEvent(
+  event: WebhookEvent,
+  pageId: string,
+  notionKey: string | null,
+): void {
+  const authors = (event.authors || []).map(a => a.type).join(",");
+  const isBot = (event.authors || []).some(a => a.type === "bot" || a.type === "scheduled_bot");
+  if (isBot) return;
+
+  const parentInfo = event.data?.parent as { id?: string; type?: string } | undefined;
+  const timeWindow = new Date(Math.floor(Date.now() / 60_000) * 60_000).toISOString();
+
+  const triagePayload: NotionInboundTriagePayload = {
+    reason: "webhook",
+    events: [{
+      eventType: event.type,
+      pageId,
+      notionKey,
+      authors: event.authors || [],
+      parentType: parentInfo?.type,
+    }],
+    date: new Date().toISOString().slice(0, 10),
+  };
+
+  const idempotencyKey = `triage:${pageId}:${event.type}:${timeWindow}`;
+
+  const { job, created } = enqueueJob({
+    type: "notion_inbound_triage",
+    payload: triagePayload,
+    triggerSource: "notion-webhook",
+    idempotencyKey,
+  });
+
+  if (created) {
+    activityBus.log("notion-webhook:triage", `Queued triage for ${event.type} on ${notionKey || pageId}`, {
+      jobId: job.id,
+      eventType: event.type,
+      pageId,
+      notionKey: notionKey || "untracked",
+    });
+  }
 }
 
 export function handleWebhookEvent(event: WebhookEvent): { status: number; message: string } {
@@ -205,6 +258,17 @@ export function handleWebhookEvent(event: WebhookEvent): { status: number; messa
       notionKey: notionKey || "unknown",
     });
     return { status: 500, message: "Internal error" };
+  }
+
+  if (TRIAGE_WORTHY_EVENTS.has(eventType)) {
+    try {
+      queueTriageEvent(event, pageId, notionKey);
+    } catch (err: any) {
+      activityBus.log("notion-webhook:error", `Triage queue failed: ${err.message}`, {
+        eventType,
+        pageId,
+      });
+    }
   }
 
   return { status: 200, message: "Processed" };

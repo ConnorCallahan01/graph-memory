@@ -1,7 +1,5 @@
 import { HarnessAdapter, HarnessType } from "./types.js";
-import { buildSessionStartContext, flushAndQueueJobs, cleanupSession } from "./shared.js";
-import { hasV3Data, buildV3Context } from "../session-start-context.js";
-import { buildV2Injection } from "./shared.js";
+import { buildSessionStartContext, buildFullInjection, buildV2Injection, flushAndQueueJobs, cleanupSession } from "./shared.js";
 
 export class PiAdapter implements HarnessAdapter {
   name: HarnessType = "pi";
@@ -10,14 +8,13 @@ export class PiAdapter implements HarnessAdapter {
   async onSessionStart(cwd: string, sessionId: string): Promise<string> {
     const ctx = buildSessionStartContext(cwd, sessionId);
 
+    let context: string;
     if (ctx.mentalModelUsed) {
-      const v3 = buildV3Context(ctx.project.name);
-      const context = v3.context || "";
-      this.pendingContext = context;
-      return context;
+      context = buildFullInjection(ctx.project);
+    } else {
+      context = buildV2Injection(ctx.project);
     }
 
-    const context = buildV2Injection(ctx.project);
     this.pendingContext = context;
     return context;
   }

@@ -6,7 +6,7 @@ import { initializeGraph } from "../index.js";
 import { activityBus } from "../events.js";
 import { generatePreflightReport } from "./preflight.js";
 import { claimNextJob, completeRunningJob, countJobs, enqueueJob, ensureJobDirectories, failRunningJob, hasActiveJob, hasActiveJobForProject, hasActiveProjectChainJob, getActiveProjectChainProjects, countDeltasForProject, listJobs, requeueRunningJob, requeueStaleRunningJobs, updateRunningJob, PROJECT_CHAIN_TYPES, GLOBAL_CHAIN_TYPES, PRIORITY } from "./job-queue.js";
-import { GraphMemoryJob, GraphMemoryJobState } from "./job-schema.js";
+import { GraphMemoryJob, GraphMemoryJobState, NotionInboundTriagePayload, NotionInboundEnrichPayload } from "./job-schema.js";
 import { runPipelineWorker, WorkerRunOptions } from "./worker-runner.js";
 import { loadRuntimeConfig } from "../runtime.js";
 import { regenerateCoreContextFiles, regenerateDreamContext } from "./graph-ops.js";
@@ -22,10 +22,12 @@ import { processCompressorOutputs, runAutoPrune } from "./compressor-tools.js";
 import { rebuildV3Index as rebuildGraphIndex } from "./graph-index.js";
 import { bootstrapProjectDoc, detectDocDrift } from "./bootstrap.js";
 import { readNotionSyncState, writeNotionSyncState, buildNotionDiff, writeDiffReport, readSyncPlan, executeNotionSync, buildWorkspaceManifest, writeWorkspaceManifest, mergeStewardPlans, readStewardPlan, StewardPlan } from "./notion-sync.js";
-import { checkNtnReady } from "./notion-cli.js";
+import { checkNtnReady, getPage } from "./notion-cli.js";
 import { detectInboundEdits, writeInboundInput, readInboundPlan, applyInboundDeltas, writeInboundDeltas, writeMergeInput, readMergeResult, detectNewComments, buildCommentDetections, detectNewNotionTasks, InboundEdit } from "./notion-inbound.js";
 import { startWebhookServer } from "./notion-webhook.js";
 import { addNotionPickupItem } from "../project-working.js";
+import { appendObservation } from "../mind/observations.js";
+import { appendObservation as appendProjectObservation, ensureLens } from "../lenses/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.resolve(__dirname, "../../../agents");
@@ -1043,7 +1045,6 @@ async function runCompressor(job: GraphMemoryJob): Promise<void> {
     jobId: job.id,
     reason: payload.reason,
     modelsUpdated: toolResult.modelsUpdated,
-    whispersGenerated: toolResult.whispersGenerated,
     observationsAbsorbed: toolResult.observationsAbsorbed,
     graphNodesArchived: toolResult.graphNodesArchived,
     errors: toolResult.errors.length,
@@ -1512,6 +1513,327 @@ async function runNotionMerge(edit: InboundEdit, jobId: string, date: string): P
     };
     applyInboundDeltas([delta]);
   }
+}
+
+async function runNotionTriage(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as NotionInboundTriagePayload;
+
+  activityBus.log("notion-triage:start", `Notion triage starting: ${payload.events.length} event(s)`, {
+    jobId: job.id,
+    date: payload.date,
+    eventCount: payload.events.length,
+  });
+
+  type TriageRoute = "ignore" | "record" | "enrich" | "both";
+  interface TriageDecision {
+    pageId: string;
+    notionKey: string | null;
+    eventType: string;
+    route: TriageRoute;
+    target: string;
+    reason: string;
+  }
+
+  const IGNORE_EVENTS = new Set([
+    "page.deleted", "page.undeleted", "page.locked", "page.unlocked",
+    "page.moved",
+    "database.created", "database.deleted", "database.undeleted",
+    "database.moved", "database.content_updated", "database.schema_updated",
+    "data_source.created", "data_source.deleted", "data_source.undeleted",
+    "data_source.moved", "data_source.content_updated", "data_source.schema_updated",
+    "comment.updated", "comment.deleted",
+  ]);
+
+  const decisions: TriageDecision[] = [];
+  const skipped: Array<{ pageId: string; reason: string }> = [];
+
+  for (const event of payload.events) {
+    const isBot = (event.authors || []).some(a => a.type === "bot" || a.type === "scheduled_bot");
+    if (isBot) {
+      skipped.push({ pageId: event.pageId, reason: "bot-authored" });
+      continue;
+    }
+
+    if (IGNORE_EVENTS.has(event.eventType)) {
+      skipped.push({ pageId: event.pageId, reason: `structural: ${event.eventType}` });
+      continue;
+    }
+
+    const route = classifyEvent(event);
+    const target = resolveStewardTarget(event.notionKey, event.eventType);
+
+    decisions.push({
+      pageId: event.pageId,
+      notionKey: event.notionKey,
+      eventType: event.eventType,
+      route,
+      target,
+      reason: triageReason(event.eventType, route),
+    });
+  }
+
+  const recordDecisions = decisions.filter(d => d.route === "record" || d.route === "both");
+  const enrichDecisions = decisions.filter(d => d.route === "enrich" || d.route === "both");
+
+  activityBus.log("notion-triage:complete", `Triage complete: ${recordDecisions.length} record, ${enrichDecisions.length} enrich, ${skipped.length} skipped`, {
+    jobId: job.id,
+    recordCount: recordDecisions.length,
+    enrichCount: enrichDecisions.length,
+    skippedCount: skipped.length,
+  });
+
+  if (recordDecisions.length > 0) {
+    const deltas = recordDecisions.map(d => ({
+      notionKey: d.notionKey || d.pageId,
+      editType: d.eventType.includes("comment") ? "preference_edit" as const : "new_section" as const,
+      sourceNodes: [],
+      observation: `[Notion triage] ${d.reason}`,
+      targetFile: "",
+      action: "create_observation" as const,
+      payload: { eventType: d.eventType, target: d.target },
+    }));
+    const applyResult = applyInboundDeltas(deltas);
+    writeInboundDeltas(deltas, payload.date);
+    activityBus.log("notion-triage:record", `Recorded ${applyResult.applied} observation(s) from triage`, {
+      jobId: job.id,
+      applied: applyResult.applied,
+      errors: applyResult.errors,
+    });
+  }
+
+  if (enrichDecisions.length > 0) {
+    const enrichPayload: NotionInboundEnrichPayload = {
+      reason: "triage",
+      triageId: job.id,
+      routes: enrichDecisions.map(d => ({
+        action: d.route === "both" ? "both" as const : "enrich" as const,
+        target: d.target,
+        notionKey: d.notionKey || d.pageId,
+        pageId: d.pageId,
+        reason: d.reason,
+      })),
+      date: payload.date,
+    };
+
+    const { job: enrichJob, created } = enqueueJob({
+      type: "notion_inbound_enrich",
+      payload: enrichPayload,
+      triggerSource: `triage:${job.id}`,
+      idempotencyKey: `enrich:${payload.date}:${job.id}`,
+    });
+
+    if (created) {
+      activityBus.log("notion-triage:enrich", `Queued enrichment job`, {
+        jobId: enrichJob.id,
+        itemCount: enrichDecisions.length,
+      });
+    }
+  }
+}
+
+type TriageRoute = "ignore" | "record" | "enrich" | "both";
+
+interface TriageEvent {
+  eventType: string;
+  pageId: string;
+  notionKey: string | null;
+  authors: Array<{ id: string; type: string }>;
+  parentType?: string;
+}
+
+function classifyEvent(event: TriageEvent): TriageRoute {
+  if (event.eventType === "comment.created") return "record";
+  if (event.eventType === "page.content_updated") return "record";
+  if (event.eventType === "page.properties_updated") return "record";
+
+  if (event.eventType === "page.created") {
+    const isDatabase = event.parentType === "database" || event.parentType === "data_source";
+    if (isDatabase) {
+      try {
+        const content = getPage(event.pageId);
+        const bodyText = content.replace(/[\s\n\r]/g, "");
+        if (bodyText.length < 100) return "enrich";
+        return "both";
+      } catch {
+        return "enrich";
+      }
+    }
+    return "enrich";
+  }
+
+  return "record";
+}
+
+function resolveStewardTarget(notionKey: string | null, eventType: string): string {
+  if (!notionKey) return "tasks_steward";
+  if (notionKey.startsWith("task:")) return "tasks_steward";
+  if (notionKey.startsWith("decisions/")) return "knowledge_steward";
+  if (notionKey.startsWith("dream:")) return "knowledge_steward";
+  if (notionKey.startsWith("pattern:")) return "knowledge_steward";
+  if (notionKey.startsWith("projects/")) return "workspace_steward";
+  if (notionKey === "how-i-think" || notionKey === "patterns-insights" || notionKey === "dreams") return "workspace_steward";
+  return "tasks_steward";
+}
+
+function triageReason(eventType: string, route: TriageRoute): string {
+  if (route === "ignore") return `Ignored: ${eventType}`;
+  if (route === "enrich") return `New sparse content from ${eventType} — needs enrichment`;
+  if (route === "both") return `Substantive new content from ${eventType} — record and enrich`;
+  return `Human edit via ${eventType} — recording to memory`;
+}
+
+async function runNotionEnrich(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as NotionInboundEnrichPayload;
+
+  activityBus.log("notion-enrich:start", `Notion enrichment starting: ${payload.routes.length} item(s)`, {
+    jobId: job.id,
+    date: payload.date,
+    itemCount: payload.routes.length,
+  });
+
+  const notionState = readNotionSyncState();
+
+  const enrichItems = payload.routes.map(route => {
+    let properties: Record<string, unknown> = {};
+    let bodyContent = "";
+    try {
+      const pageContent = getPage(route.pageId);
+      bodyContent = pageContent;
+    } catch {}
+
+    return {
+      notionKey: route.notionKey,
+      pageId: route.pageId,
+      properties,
+      bodyContent,
+      triageReason: route.reason,
+    };
+  });
+
+  const enrichInputPath = path.join(CONFIG.paths.graphRoot, `.notion-enrich-input-${payload.date}-${job.id}.json`);
+  fs.writeFileSync(enrichInputPath, JSON.stringify({
+    date: payload.date,
+    enrichmentId: job.id,
+    target: payload.routes[0]?.target || "tasks_steward",
+    items: enrichItems,
+  }, null, 2));
+
+  const enrichInputPathForWorker = toWorkerPath(enrichInputPath);
+  const enrichPlanPathForWorker = toWorkerPath(
+    path.join(CONFIG.paths.graphRoot, `.notion-enrich-plan-${payload.date}-${job.id}.json`)
+  );
+  const enrichAgentPath = path.join(AGENTS_DIR, "notion-enrichment-steward.md");
+  const syncStatePathForWorker = toWorkerPath(CONFIG.paths.notionSyncState);
+
+  let manifestPathForWorker = "";
+  try {
+    const manifest = buildWorkspaceManifest(notionState);
+    const manifestPath = writeWorkspaceManifest(manifest);
+    manifestPathForWorker = toWorkerPath(manifestPath);
+  } catch {}
+
+  const prompt = `Read the enrichment steward instructions at ${enrichAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Enrichment input: ${enrichInputPathForWorker}. Sync state: ${syncStatePathForWorker}. Workspace manifest: ${manifestPathForWorker}. Write the enrichment plan to ${enrichPlanPathForWorker}. Date: ${payload.date}.`;
+
+  const result = await runWorker({
+    name: `notion-enrich-${job.id}`,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 10 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    throw new Error(`Enrichment worker exited with code ${result.exitCode}. See ${result.logFile}`);
+  }
+
+  const enrichPlanPath = path.join(CONFIG.paths.graphRoot, `.notion-enrich-plan-${payload.date}-${job.id}.json`);
+  if (!fs.existsSync(enrichPlanPath)) {
+    activityBus.log("notion-enrich:complete", "Enrichment worker produced no plan");
+    return;
+  }
+
+  const enrichPlan = JSON.parse(fs.readFileSync(enrichPlanPath, "utf-8")) as {
+    enrichmentId: string;
+    updates: Array<{
+      notionPageId: string;
+      notionKey: string;
+      type: string;
+      changedProperties: Record<string, unknown>;
+      markdown: string;
+      sourceNodes: string[];
+    }>;
+    observations: Array<{
+      project: string;
+      type: string;
+      observation: string;
+      evidence: string[];
+      confidence: number;
+    }>;
+  };
+
+  if (enrichPlan.updates.length > 0) {
+    const stewardPlan: StewardPlan = {
+      steward: "enrichment",
+      generatedAt: new Date().toISOString(),
+      creates: [],
+      updates: enrichPlan.updates.map(u => ({
+        ...u,
+        type: (u.type === "wiki_page" ? "wiki_page" : "database_row") as "database_row" | "wiki_page",
+        mergeStrategy: "replace" as const,
+      })),
+      archives: [],
+    };
+
+    const syncPlan = mergeStewardPlans([stewardPlan], job.id);
+    const syncResult = executeNotionSync(syncPlan, notionState);
+    writeNotionSyncState(notionState);
+
+    activityBus.log("notion-enrich:sync", `Enrichment sync: ${syncResult.created} created, ${syncResult.updated} updated`, {
+      jobId: job.id,
+      ...syncResult,
+    });
+  }
+
+  if (enrichPlan.observations && enrichPlan.observations.length > 0) {
+    for (const obs of enrichPlan.observations) {
+      try {
+        if (obs.project && obs.project !== "global") {
+          ensureLens(obs.project);
+          appendProjectObservation(obs.project, {
+            type: "notion_inbound",
+            observation: obs.observation,
+            evidence: obs.evidence,
+            confidence: obs.confidence,
+            sessionId: "notion-enrich",
+          });
+        } else {
+          appendObservation({
+            layer: "global",
+            type: "notion_inbound",
+            observation: obs.observation,
+            evidence: obs.evidence,
+            confidence: obs.confidence,
+            sessionId: "notion-enrich",
+          });
+        }
+      } catch (err: any) {
+        activityBus.log("notion-enrich:error", `Failed to write observation: ${err.message}`);
+      }
+    }
+  }
+
+  activityBus.log("notion-enrich:complete", `Enrichment complete: ${enrichPlan.updates.length} updates, ${(enrichPlan.observations || []).length} observations`, {
+    jobId: job.id,
+    updates: enrichPlan.updates.length,
+    observations: (enrichPlan.observations || []).length,
+  });
+
+  try { fs.unlinkSync(enrichInputPath); } catch {}
 }
 
 async function runNotionSync(job: GraphMemoryJob): Promise<void> {
@@ -1995,6 +2317,10 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
       return runBootstrap(job);
     case "notion_sync":
       return runNotionSync(job);
+    case "notion_inbound_triage":
+      return runNotionTriage(job);
+    case "notion_inbound_enrich":
+      return runNotionEnrich(job);
     default:
       throw new Error(`Unknown job type: ${job.type}`);
   }

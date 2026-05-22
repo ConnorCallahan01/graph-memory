@@ -105,7 +105,7 @@ function createConfig() {
       minSessionMessages: 3,
       pipelineCooldownMs: 300_000,
       daemonPollMs: 30_000,
-      daemonConcurrency: 4,
+      daemonConcurrency: 6,
       dailyAnalysisHourLocal: 7,
       dailyAnalysisTimeZone: inferredTimeZone,
     },

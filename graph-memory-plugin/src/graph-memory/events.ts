@@ -88,7 +88,16 @@ export type ActivityEventType =
   | "notion-webhook:task-update"
   | "notion-webhook:content-update"
   | "notion-webhook:comment"
-  | "notion-webhook:event";
+  | "notion-webhook:event"
+  | "notion-triage:start"
+  | "notion-triage:complete"
+  | "notion-triage:record"
+  | "notion-triage:enrich"
+  | "notion-enrich:start"
+  | "notion-enrich:complete"
+  | "notion-enrich:sync"
+  | "notion-enrich:error"
+  | "notion-webhook:triage";
 
 export interface ActivityEvent {
   type: ActivityEventType;

@@ -16,7 +16,7 @@ import { detectProject, writeActiveProject, cleanActiveProjects } from "../graph
 import { ensureProjectWorkingFile } from "../graph-memory/project-working.js";
 import { walkNodes } from "../graph-memory/utils.js";
 import { getWorkingInjectionPaths } from "../graph-memory/working-files.js";
-import { buildV3Context, hasV3Data } from "../graph-memory/session-start-context.js";
+import { buildSessionStartContext, hasMentalModelData } from "../graph-memory/session-start-context.js";
 
 interface PinnedNodePayload {
   path: string;
@@ -248,15 +248,15 @@ async function main() {
   let totalTokens = 0;
   let whisperPrefix = "";
 
-  if (hasV3Data()) {
+  if (hasMentalModelData()) {
     try {
-      const v3 = buildV3Context(project.name);
-      if (!v3.sources.fallback && v3.context) {
-        whisperPrefix = v3.context;
-        totalTokens += v3.tokensUsed;
+      const ctx = buildSessionStartContext(project.name);
+      if (!ctx.sources.fallback && ctx.context) {
+        whisperPrefix = ctx.context;
+        totalTokens += ctx.tokensUsed;
       }
     } catch (err: any) {
-      console.error(`[graph-memory] v3 whisper failed, continuing without: ${err.message}`);
+      console.error(`[graph-memory] mental model context failed, continuing without: ${err.message}`);
     }
   }
 

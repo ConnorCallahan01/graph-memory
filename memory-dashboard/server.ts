@@ -12,7 +12,7 @@ app.use(express.json())
 const PORT = Number.parseInt(process.env.MEMORY_DASHBOARD_API_PORT || process.env.PORT || '3001', 10)
 
 type JobState = 'queued' | 'running' | 'done' | 'failed'
-type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc' | 'notion_sync'
+type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc' | 'notion_sync' | 'notion_inbound_triage' | 'notion_inbound_enrich'
 
 interface RuntimeConfig {
   mode?: 'manual' | 'docker'
@@ -131,7 +131,6 @@ function getPaths(graphRoot = getGraphRoot()) {
   return {
     graphRoot,
     index: join(graphRoot, '.index.json'),
-    v3Index: join(graphRoot, 'graph', '.index.json'),
     archiveIndex: join(graphRoot, '.archive-index.json'),
     nodes: join(graphRoot, 'nodes'),
     archive: join(graphRoot, 'archive'),
@@ -197,21 +196,10 @@ function isArchivedNodePath(nodePath: string): boolean {
 }
 
 function readIndex(graphRoot = getGraphRoot()) {
-  const paths = getPaths(graphRoot)
-  const v3Index = safeJsonParse(paths.v3Index)
-  if (v3Index?.entries && typeof v3Index.entries === 'object' && Object.keys(v3Index.entries).length > 0) {
-    return Object.values(v3Index.entries).filter((entry: any) => !isArchivedNodePath(entry.path || ''))
-  }
-
   return readLegacyIndex(graphRoot).filter((entry: any) => !isArchivedNodePath(entry.path || ''))
 }
 
 function readV3Index(graphRoot = getGraphRoot()) {
-  const index = safeJsonParse(getPaths(graphRoot).v3Index)
-  if (index?.entries && typeof index.entries === 'object' && Object.keys(index.entries).length > 0) {
-    return index
-  }
-
   const legacyEntries = readLegacyIndex(graphRoot)
   const entries: Record<string, any> = {}
   const categories: Record<string, string[]> = {}
@@ -250,13 +238,6 @@ function updateNodeIndexes(graphRoot: string, nodePath: string, frontmatter: Rec
   if (Array.isArray(v2Index)) {
     const next = v2Index.map((entry: any) => entry.path === nodePath ? patchEntry(entry) : entry)
     writeFileSync(paths.index, JSON.stringify(next, null, 2))
-  }
-
-  const v3Index = safeJsonParse(paths.v3Index)
-  if (v3Index?.entries?.[nodePath]) {
-    v3Index.entries[nodePath] = patchEntry(v3Index.entries[nodePath])
-    v3Index.builtAt = new Date().toISOString()
-    writeFileSync(paths.v3Index, JSON.stringify(v3Index, null, 2))
   }
 }
 
@@ -772,7 +753,7 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
 
   const notionSyncJobState = hasJobInFlight(jobs, 'notion_sync')
   const notionSyncEnabled = (() => {
-    const configPath = join(graphRoot, '..', 'config.yml')
+    const configPath = join(graphRoot, 'config.yml')
     if (!existsSync(configPath)) return false
     const raw = readFileSync(configPath, 'utf-8')
     return /notionSync\.enabled:\s*true/i.test(raw)
@@ -1264,7 +1245,7 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
-function formatRecentSessionLogs(graphRoot: string, project: string, limit = 3): string {
+function formatRecentSessionLogs(graphRoot: string, project: string): string {
   const filePath = join(getPaths(graphRoot).v3Sessions, `${sanitizeProjectSlug(project)}.jsonl`)
   if (!project || project === 'global' || !existsSync(filePath)) return ''
 
@@ -1274,21 +1255,15 @@ function formatRecentSessionLogs(graphRoot: string, project: string, limit = 3):
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line))
-      .slice(-limit)
-      .reverse()
 
     if (logs.length === 0) return ''
+    const log = logs[logs.length - 1]
 
-    const lines = ['## Recent Sessions', '']
-    for (const log of logs) {
-      const date = typeof log.timestamp === 'string' ? log.timestamp.slice(0, 10) : 'unknown'
-      lines.push(`**${date}**`)
-      if (Array.isArray(log.shipped) && log.shipped.length > 0) lines.push(`Shipped: ${log.shipped.join(', ')}`)
-      if (Array.isArray(log.decisions) && log.decisions.length > 0) lines.push(`Decisions: ${log.decisions.join('; ')}`)
-      if (Array.isArray(log.openThreads) && log.openThreads.length > 0) lines.push(`Open: ${log.openThreads.join('; ')}`)
-      if (log.nextSessionShould) lines.push(`Next: ${log.nextSessionShould}`)
-      lines.push('')
-    }
+    const date = typeof log.timestamp === 'string' ? log.timestamp.slice(0, 10) : 'unknown'
+    const lines = ['## Last Session', '', `**${date}**`]
+    if (Array.isArray(log.openThreads) && log.openThreads.length > 0) lines.push(`Open: ${log.openThreads.join('; ')}`)
+    if (log.nextSessionShould) lines.push(`Next: ${log.nextSessionShould}`)
+
     return lines.join('\n').trim()
   } catch {
     return ''
@@ -1386,7 +1361,7 @@ function getArtifactInfo(graphRoot = getGraphRoot(), projectOverride?: string) {
       global_whisper: paths.globalWhisper,
       project_whisper: projectWhisperPath,
       session_log: activeProject !== 'global' ? join(paths.v3Sessions, `${sanitizeProjectSlug(activeProject)}.jsonl`) : '',
-      guardrails: paths.v3Index,
+      guardrails: paths.index,
     }[layer.id] || ''
     if (filePath && existsSync(filePath)) {
       layer.updatedAt = statSync(filePath).mtime.toISOString()
@@ -2281,7 +2256,7 @@ app.get('/api/events', (_req, res) => {
   _req.on('close', () => clients.delete(res))
 })
 
-// ── v3 API Endpoints ──────────────────────────────────────────────────────────
+// ── Mental Model Endpoints ─────────────────────────────────────────────────────
 
 app.get('/api/projects', (_req, res) => {
   try {
@@ -2341,7 +2316,7 @@ app.get('/api/projects', (_req, res) => {
   }
 })
 
-app.get('/api/v3/model', (_req, res) => {
+app.get('/api/model', (_req, res) => {
   const graphRoot = getGraphRoot()
   const modelPath = join(graphRoot, 'mind/model.json')
   if (!existsSync(modelPath)) {
@@ -2349,13 +2324,33 @@ app.get('/api/v3/model', (_req, res) => {
     return
   }
   try {
-    res.json(JSON.parse(readFileSync(modelPath, 'utf-8')))
+    const parsed = JSON.parse(readFileSync(modelPath, 'utf-8'))
+    const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
+    let observationCount = 0
+    if (existsSync(globalObsFile)) {
+      observationCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+        try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+      }, 0)
+    }
+    const lensesDir = join(graphRoot, 'lenses')
+    if (existsSync(lensesDir)) {
+      for (const entry of readdirSync(lensesDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('_')) continue
+        const obsFile = join(lensesDir, entry.name, 'observations.jsonl')
+        if (existsSync(obsFile)) {
+          observationCount += readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+            try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+          }, 0)
+        }
+      }
+    }
+    res.json({ ...parsed, observationCount })
   } catch {
     res.json({ model: null })
   }
 })
 
-app.get('/api/v3/whisper', (_req, res) => {
+app.get('/api/whisper', (_req, res) => {
   const graphRoot = getGraphRoot()
   const whisperPath = join(graphRoot, 'mind/whisper.txt')
   if (!existsSync(whisperPath)) {
@@ -2366,7 +2361,7 @@ app.get('/api/v3/whisper', (_req, res) => {
   res.json({ whisper: text, tokens: Math.ceil(text.length / 4) })
 })
 
-app.get('/api/v3/lenses', (_req, res) => {
+app.get('/api/lenses', (_req, res) => {
   const graphRoot = getGraphRoot()
   const lensesDir = join(graphRoot, 'lenses')
   if (!existsSync(lensesDir)) {
@@ -2426,7 +2421,7 @@ app.get('/api/v3/lenses', (_req, res) => {
   res.json(lenses)
 })
 
-app.get('/api/v3/lens/:project', (req, res) => {
+app.get('/api/lens/:project', (req, res) => {
   const graphRoot = getGraphRoot()
   const lensDir = join(graphRoot, 'lenses', sanitizeProjectSlug(req.params.project))
   if (!existsSync(lensDir)) {
@@ -2459,7 +2454,7 @@ app.get('/api/v3/lens/:project', (req, res) => {
   })
 })
 
-app.get('/api/v3/sessions/:project', (req, res) => {
+app.get('/api/sessions/:project', (req, res) => {
   const graphRoot = getGraphRoot()
   const sessionsFile = join(graphRoot, 'sessions', `${sanitizeProjectSlug(req.params.project)}.jsonl`)
   if (!existsSync(sessionsFile)) {
@@ -2476,18 +2471,15 @@ app.get('/api/v3/sessions/:project', (req, res) => {
   }
 })
 
-app.get('/api/v3/observations', (_req, res) => {
+app.get('/api/observations', (_req, res) => {
   const graphRoot = getGraphRoot()
-  const obsDir = join(graphRoot, '.pipeline', 'observations')
-  if (!existsSync(obsDir)) {
-    res.json({ global: 0, projects: {} })
-    return
-  }
 
   const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
   let globalCount = 0
   if (existsSync(globalObsFile)) {
-    globalCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).length
+    globalCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+      try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+    }, 0)
   }
 
   const projectObs: Record<string, number> = {}
@@ -2497,7 +2489,9 @@ app.get('/api/v3/observations', (_req, res) => {
       if (!entry.isDirectory() || entry.name.startsWith('_')) continue
       const obsFile = join(lensesDir, entry.name, 'observations.jsonl')
       if (existsSync(obsFile)) {
-        projectObs[entry.name] = readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).length
+        projectObs[entry.name] = readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+          try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+        }, 0)
       }
     }
   }
@@ -2505,7 +2499,7 @@ app.get('/api/v3/observations', (_req, res) => {
   res.json({ global: globalCount, projects: projectObs })
 })
 
-app.get('/api/v3/graph', (_req, res) => {
+app.get('/api/mind-graph', (_req, res) => {
   const graphRoot = getGraphRoot()
   const index = readV3Index(graphRoot)
   if (!index.entries || Object.keys(index.entries).length === 0) {
@@ -2564,7 +2558,7 @@ app.get('/api/v3/graph', (_req, res) => {
   }
 })
 
-app.get('/api/v3/node/:path(*)', (req, res) => {
+app.get('/api/mind-node/:path(*)', (req, res) => {
   const graphRoot = getGraphRoot()
   const { nodes } = getPaths(graphRoot)
   const nodePath = resolve(nodes, `${req.params['path']}.md`)
@@ -2585,7 +2579,7 @@ app.get('/api/v3/node/:path(*)', (req, res) => {
   }
 })
 
-app.get('/api/v3/status', (_req, res) => {
+app.get('/api/mind-status', (_req, res) => {
   const graphRoot = getGraphRoot()
   const mindDir = join(graphRoot, 'mind')
   const hasMind = existsSync(mindDir) && existsSync(join(mindDir, 'whisper.txt'))
@@ -2625,7 +2619,7 @@ app.get('/api/v3/status', (_req, res) => {
   })
 })
 
-app.get('/api/v3/active-sessions', (_req, res) => {
+app.get('/api/active-sessions', (_req, res) => {
   const graphRoot = getGraphRoot()
   const bufferDir = getPaths(graphRoot).buffer
   const sessionsDir = join(graphRoot, '.sessions')
@@ -2667,7 +2661,7 @@ app.get('/api/v3/active-sessions', (_req, res) => {
   res.json(activeSessions)
 })
 
-app.get('/api/v3/pipeline', (_req, res) => {
+app.get('/api/mind-pipeline', (_req, res) => {
   const graphRoot = getGraphRoot()
   const jobsDir = join(graphRoot, '.jobs')
 
@@ -2719,10 +2713,25 @@ app.get('/api/v3/pipeline', (_req, res) => {
     .filter(j => Date.parse((j.completedAt as string) || '') > lastCompressorAt)
     .length
 
-  const obsDir = join(graphRoot, '.pipeline', 'observations')
   let pendingObservations = 0
-  if (existsSync(obsDir)) {
-    pendingObservations = readdirSync(obsDir).filter(f => f.endsWith('.json')).length
+  const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
+  if (existsSync(globalObsFile)) {
+    const content = readFileSync(globalObsFile, 'utf-8').trim()
+    pendingObservations = content.split('\n').filter(Boolean).reduce((count: number, line: string) => {
+      try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+    }, 0)
+  }
+  const lensObsDir = join(graphRoot, 'lenses')
+  if (existsSync(lensObsDir)) {
+    for (const entry of readdirSync(lensObsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const lensObs = join(lensObsDir, entry.name, 'observations.jsonl')
+      if (!existsSync(lensObs)) continue
+      const content = readFileSync(lensObs, 'utf-8').trim()
+      pendingObservations += content.split('\n').filter(Boolean).reduce((count: number, line: string) => {
+        try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+      }, 0)
+    }
   }
 
   res.json({

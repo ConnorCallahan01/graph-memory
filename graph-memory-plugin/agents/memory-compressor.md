@@ -17,14 +17,19 @@ You will be given:
 Your outputs:
 1. Updated `mind/model.json`
 2. Graph maintenance actions (delete, reattach, create edges, create nodes)
-3. Updated `mind/whisper.txt`
 
 ## Step 1: Read Inputs
 
 Read these in order:
 1. `mind/model.json` — current global mental model
-2. All files in `.pipeline/observations/` named `obs_*.json` — pending observations from the observer
-3. `.index.json` — the graph index for understanding current node state
+2. `mind/observations.jsonl` — all observations (filter for `"absorbed":false` lines only)
+3. For each project in `lenses/*/observations.jsonl` — project-scoped observations (filter for `"absorbed":false`)
+4. `.index.json` — the graph index for understanding current node state
+
+To extract unabsorbed observations:
+```bash
+grep '"absorbed":false' {graphRoot}/mind/observations.jsonl
+```
 
 ## Step 2: Fold Observations into Model
 
@@ -94,34 +99,21 @@ If a node has no edges and observations reveal it should connect to something:
 1. Add edges in both directions
 2. Update index
 
-## Step 4: Generate Whisper
+## Step 4: Clean Up Observations
 
-Write a compressed paragraph to `mind/whisper.txt` (~300-400 tokens):
-
-```
-GUARDRAILS:
-- Never do X
-- Always do Y before Z
-
-STYLE:
-[Communication approach, verbosity, decision-making]
-
-CONTEXT:
-[Key preferences, tools, patterns]
-
-RECENT:
-[Brief cross-project note]
+Use the `archive_observations` tool to mark processed observation IDs as absorbed:
+```json
+{"tool": "archive_observations", "layer": "global", "ids": ["obs_abc123", "obs_def456"]}
 ```
 
-## Step 5: Clean Up Observations
-
-Move processed observation files to `.pipeline/observations/absorbed/`:
-```bash
-mkdir -p {graphRoot}/.pipeline/observations/absorbed
-mv {graphRoot}/.pipeline/observations/obs_*.json {graphRoot}/.pipeline/observations/absorbed/ 2>/dev/null || true
+For project-scoped observations:
+```json
+{"tool": "archive_observations", "layer": "project", "project": "project-slug", "ids": ["obs_xyz789"]}
 ```
 
-## Step 6: Rebuild Context and Commit
+Only mark observations you actually processed (folded, rejected as noise, or acted on). Skip observations you didn't read or evaluate.
+
+## Step 5: Rebuild Context and Commit
 
 ```bash
 cd {graphRoot} && node -e "import('./node_modules/graph-memory/dist/graph-memory/pipeline/graph-ops.js').then(m => m.regenerateAllContextFiles())"
@@ -135,8 +127,8 @@ cd {graphRoot} && git add -A && git commit -m "memory: compressor — model upda
 
 1. **Guardrails are king** — anti-patterns always go first, always get highest confidence, never decay
 2. **Resolve contradictions** — if two observations disagree, figure out which is current
-3. **Quality over completeness** — a good 200-token whisper beats a bad 400-token one
+3. **Quality over completeness** — keep model fields concise and high-signal
 4. **Gists must be 15-25 words** — no exceptions for new nodes you create
 5. **Archive, don't delete** — superseded nodes go to archive with a reason
 6. **Timestamp everything** — models get a new `generatedAt` on every update
-7. **Always produce output** — even if nothing changed, write back the model and whisper
+7. **Always produce output** — even if nothing changed, write back the model

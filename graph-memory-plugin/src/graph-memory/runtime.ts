@@ -76,8 +76,8 @@ function defaultDockerConfig(graphRoot: string): DockerRuntimeConfig {
     authVolume: `graph-memory-auth-${suffix}`,
     graphRootInContainer: "/graph-memory",
     authPathInContainer: "/graph-memory-auth",
-    memoryLimit: "2g",
-    cpuLimit: "2.0",
+    memoryLimit: "6g",
+    cpuLimit: "6.0",
     repoMounts: [],
   };
 }

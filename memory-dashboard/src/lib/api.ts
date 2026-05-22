@@ -578,13 +578,13 @@ export interface WhisperResponse {
 }
 
 export async function fetchModel(): Promise<ModelResponse | null> {
-  const res = await fetch('/api/v3/model')
+  const res = await fetch('/api/model')
   if (!res.ok) return null
   return res.json()
 }
 
 export async function fetchWhisper(): Promise<WhisperResponse | null> {
-  const res = await fetch('/api/v3/whisper')
+  const res = await fetch('/api/whisper')
   if (!res.ok) return null
   return res.json()
 }
