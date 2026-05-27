@@ -162,6 +162,16 @@ General:
 
 - `bin/docker-stop.sh`
 
+### Ngrok (Notion Webhooks)
+
+If you are using Notion sync with webhooks, start an ngrok tunnel pointing at the daemon port:
+
+```bash
+ngrok http 3100
+```
+
+Free-tier ngrok URLs change on every restart — update the webhook URL in your Notion integration settings after restarting. See [docs/notion-webhook-troubleshooting.md](docs/notion-webhook-troubleshooting.md) for full details.
+
 ## Commands
 
 Installed slash commands (available in both Claude Code and OpenCode):

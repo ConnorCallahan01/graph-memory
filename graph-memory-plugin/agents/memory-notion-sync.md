@@ -184,8 +184,15 @@ Beyond just syncing the diff, think about the workspace as a whole:
 
 1. **Stale content**: If a project hasn't had activity in 30+ days and has no open tasks, consider updating its Status to "Paused".
 2. **Orphaned content**: If a task or decision has no Project relation but clearly belongs to a known project, add the relation.
-3. **Inconsistent naming**: If a project is called "Keel3 Oliver Demo" in one place and "Oliver" in another, prefer the more descriptive name.
-4. **Missing content**: If a database row has properties but no body content where it should (projects, patterns, dreams), flag it for content creation.
+3. **Inconsistent naming**: If a project is called "Keel3 Oliver Demo" in one place and "Oliver" in another, prefer the canonical slug from `lenses/` directory.
+4. **Duplicate rows**: If two database rows have nearly identical names/keys, merge them — update the richer one, archive the other. Use the canonical slug map to identify duplicates:
+   - `Keel3__keel3_oliver_demo` = `keel3-oliver-demo` = "Oliver" (same project)
+   - `ConnorCallahan01__cogni-code` = `agent-memory` = `graph-memory` = "Cogni-Code (Graph Memory)" (same project)
+   - `acellushealth__openpatient` = "OpenPatient"
+   - `acellushealth__ace-engine-api` = "ACE Engine API"
+   - `acellushealth__dvc` = "DVC"
+   - `brandywine-buzz` = "Brandywine Buzz"
+   - `agent_memory` = "Agent Memory"
 5. **Overgrown pages**: If a wiki page has 20+ sections, consider whether it needs splitting or archiving older sections.
 6. **Duplicate rows**: If two database rows have nearly identical names/keys, merge them — update the richer one, archive the other.
 
@@ -216,6 +223,16 @@ Brief rows are append-only. Once a brief exists for a date, it should NEVER be u
 ### Sizing heuristic
 
 A typical daily sync should produce 0-3 creates and 0-2 updates. If you're producing more than 5 updates, re-examine whether each one reflects a real change.
+
+## Project Naming Convention
+
+The `lenses/` directory is the canonical source of truth for project names. Every project notionKey MUST use the directory name from `lenses/`. Node paths under `nodes/projects/` use freeform names (e.g. `keel3-oliver-demo`) that may differ from the canonical slug (`Keel3__keel3_oliver_demo`). The diff engine normalizes these at construction time, but when producing a sync plan, always derive `notionKey` from the sync state's existing entries or the `lenses/` directory names.
+
+**Rules:**
+1. Before creating ANY project row, check `state.rows` for an existing entry with `sourceField: "projects"`.
+2. NEVER create a second project row for a project that already has one under a different key.
+3. When the diff contains items with multiple batch names for the same project, merge them into a single project update.
+4. For display names in properties, use the human-readable form above.
 
 ## Important Rules
 

@@ -86,7 +86,7 @@ The `state.json` has structured fields:
 - `tasksWorkedOn` — items worked this session → Status: "In Progress"
 - `shipped` — items completed → Status: "Done"
 
-**Project name mapping:** `ConnorCallahan01__cogni-code` → "Cogni-Code (Graph Memory)", `Keel3__keel3_oliver_demo` → "Oliver", `acellushealth__openpatient` → "OpenPatient", etc.
+**Project name mapping:** `ConnorCallahan01__cogni-code` → "Cogni-Code (Graph Memory)", `Keel3__keel3_oliver_demo` → "Oliver", `acellushealth__openpatient` → "OpenPatient", `acellushealth__ace-engine-api` → "ACE Engine API", `acellushealth__dvc` → "DVC", `brandywine-buzz` → "Brandywine Buzz", `agent_memory` → "Agent Memory". ALWAYS use the canonical slug from the `lenses/` directory as the `notionKey` prefix. Never invent a new project key format.
 
 ## Task Properties
 

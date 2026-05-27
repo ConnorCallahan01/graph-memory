@@ -131,4 +131,20 @@ Only include items from the diff that fall in your domain. A typical run produce
 }
 ```
 
-Properties use plain strings (except Confidence which is a number for Patterns and Dreams only — Decisions does not have Confidence). For Project relations, use the project display name: "Keel3 Oliver Demo" for Keel3, "OpenPatient" for OpenPatient, "Cogni-Code (Graph Memory)" for graph-memory, "Brandywine Buzz" for brandywine-buzz. The sync engine converts automatically.
+Properties use plain strings (except Confidence which is a number for Patterns and Dreams only — Decisions does not have Confidence). For Project relations, use the project display name: "Oliver" for Keel3, "OpenPatient" for OpenPatient, "Cogni-Code (Graph Memory)" for graph-memory, "Brandywine Buzz" for brandywine-buzz. The sync engine converts automatically.
+
+## Project Naming Convention
+
+When setting the Project property, ALWAYS use the canonical slug from the `lenses/` directory. Before creating any row, check the sync state for an existing entry. The canonical slug map:
+
+| Canonical slug | Display Name |
+|----------------|-------------|
+| `ConnorCallahan01__cogni-code` | Cogni-Code (Graph Memory) |
+| `Keel3__keel3_oliver_demo` | Oliver |
+| `acellushealth__openpatient` | OpenPatient |
+| `acellushealth__ace-engine-api` | ACE Engine API |
+| `acellushealth__dvc` | DVC |
+| `brandywine-buzz` | Brandywine Buzz |
+| `agent_memory` | Agent Memory |
+
+For the `notionKey` of decisions rows, always use the node's actual path under `nodes/decisions/` (e.g. `decisions/oliver-streaming-redesign-s1-s3-shipped-2026-05-10`). For the Project property value, use the display name above.

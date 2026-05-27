@@ -124,8 +124,9 @@ export function buildNotionDiff(state: NotionSyncState): NotionSyncDiff {
   const items: DiffItem[] = [];
   const lastSync = state.lastSyncAt;
   const lastSyncMs = lastSync ? new Date(lastSync).getTime() : 0;
+  const slugLookup = buildCanonicalSlugLookup();
 
-  scanGraphNodes(state, items, lastSyncMs);
+  scanGraphNodes(state, items, lastSyncMs, slugLookup);
   scanGlobalModel(state, items);
   scanProjectModels(state, items);
   scanSessionLogs(state, items, lastSync);
@@ -181,7 +182,7 @@ function normalizeSourceNodeToNodePath(src: string): string {
     .replace(/\.md$/, "");
 }
 
-function scanGraphNodes(state: NotionSyncState, items: DiffItem[], lastSyncMs: number): void {
+function scanGraphNodes(state: NotionSyncState, items: DiffItem[], lastSyncMs: number, slugLookup: Map<string, string>): void {
   const graphDir = CONFIG.paths.nodes;
   if (!fs.existsSync(graphDir)) return;
 
@@ -196,7 +197,7 @@ function scanGraphNodes(state: NotionSyncState, items: DiffItem[], lastSyncMs: n
   for (const { nodePath, filePath } of walkNodes(graphDir)) {
     const content = fs.readFileSync(filePath, "utf-8");
     const hash = computeContentHash(content);
-    const batch = inferNodeBatch(nodePath);
+    const batch = inferNodeBatch(nodePath, slugLookup);
     let parsedData: Record<string, any> = {};
     try { parsedData = matter(content).data || {}; } catch {}
 
@@ -239,7 +240,36 @@ function scanGraphNodes(state: NotionSyncState, items: DiffItem[], lastSyncMs: n
   }
 }
 
-function inferNodeBatch(nodePath: string): string {
+function buildCanonicalSlugLookup(): Map<string, string> {
+  const lookup = new Map<string, string>();
+  const lensesDir = CONFIG.paths.lenses;
+  if (!fs.existsSync(lensesDir)) return lookup;
+
+  for (const entry of fs.readdirSync(lensesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory() || entry.name === "_archived" || entry.name === "_meta") continue;
+    const slug = entry.name;
+    lookup.set(slug.toLowerCase(), slug);
+    const parts = slug.split("__");
+    if (parts.length === 2) {
+      lookup.set(parts[1].toLowerCase(), slug);
+      lookup.set(parts[0].toLowerCase() + "/" + parts[1].toLowerCase(), slug);
+    }
+  }
+  return lookup;
+}
+
+function resolveProjectSlug(rawProject: string, slugLookup: Map<string, string>): string {
+  const direct = slugLookup.get(rawProject.toLowerCase());
+  if (direct) return direct;
+  for (const [key, slug] of slugLookup.entries()) {
+    if (key.includes(rawProject.toLowerCase()) || rawProject.toLowerCase().includes(key)) {
+      return slug;
+    }
+  }
+  return rawProject;
+}
+
+function inferNodeBatch(nodePath: string, slugLookup?: Map<string, string>): string {
   const category = nodePath.split("/")[0];
   switch (category) {
     case "patterns":
@@ -248,8 +278,11 @@ function inferNodeBatch(nodePath: string): string {
       return "global-wiki";
     case "decisions":
       return "decisions";
-    case "projects":
-      return `project:${nodePath.split("/")[1] || "unknown"}`;
+    case "projects": {
+      const rawProject = nodePath.split("/")[1] || "unknown";
+      if (!slugLookup) return `project:${rawProject}`;
+      return `project:${resolveProjectSlug(rawProject, slugLookup)}`;
+    }
     case "preferences":
     case "procedures":
     case "corrections":

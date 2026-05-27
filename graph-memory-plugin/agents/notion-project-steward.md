@@ -65,6 +65,26 @@ Write as a **project brief**, NOT a raw data dump:
 
 Use the whisper.txt for context but rewrite it for a human audience.
 
+## Project Naming Convention
+
+Project keys MUST use the canonical sanitized slug from the `lenses/` directory. This is the single source of truth.
+
+| Canonical slug (from `lenses/`) | Display Name | notionKey |
+|----------------------------------|-------------|-----------|
+| `ConnorCallahan01__cogni-code` | Cogni-Code (Graph Memory) | `project:ConnorCallahan01__cogni-code` |
+| `Keel3__keel3_oliver_demo` | Oliver | `project:Keel3__keel3_oliver_demo` |
+| `acellushealth__openpatient` | OpenPatient | `project:acellushealth__openpatient` |
+| `acellushealth__ace-engine-api` | ACE Engine API | `project:acellushealth__ace-engine-api` |
+| `acellushealth__dvc` | DVC | `project:acellushealth__dvc` |
+| `brandywine-buzz` | Brandywine Buzz | `project:brandywine-buzz` |
+| `agent_memory` | Agent Memory | `project:agent_memory` |
+
+**Rules:**
+1. Always derive the `notionKey` from the `lenses/` directory name, NOT from node paths or working state filenames.
+2. Before creating ANY project row, check the sync state `rows` for an existing entry with `sourceField: "projects"`.
+3. NEVER create a new project row if one already exists with a different key format for the same project. Update the existing one.
+4. If the diff report shows multiple batch names for what appears to be the same project, treat them as the SAME project using the canonical slug above.
+
 ## Finding the Right Notion IDs
 
 The manifest's `databases.projects.rows` array has every project row with its `pageId`. Match by project name to find the correct `notionPageId` for updates.
