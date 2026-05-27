@@ -113,12 +113,6 @@ function createConfig() {
     graph: {
       maxMapTokens: 12000,
       maxMapInjectionTokens: 7000,
-      maxSomaTokens: 1200,
-      maxWorkingTokens: 3200,
-      maxDreamsContextTokens: 600,
-      maxPriors: 30,
-      maxPriorsTokens: 1500,
-      maxNodesBeforePrune: 1200,
       maxSessionStartTokens: 15000,
       maxPinnedTokens: 3000,
       decayHalfLifeDays: 90,
@@ -143,6 +137,12 @@ function createConfig() {
       maxMapEntriesPerCategory: 8,
       maxPendingDreams: 15,
       maxDreamsPerSession: 3,
+      maxPriors: 30,
+      maxPriorsTokens: 1500,
+      maxNodesBeforePrune: 300,
+      maxSomaTokens: 2000,
+      maxWorkingTokens: 4000,
+      maxDreamsContextTokens: 1500,
     },
 
     skillforge: {
