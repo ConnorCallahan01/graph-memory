@@ -12,8 +12,11 @@ Current installable product surface.
 - `src/hooks/`: Claude Code hook entrypoints
 - `bin/`: install, runtime, Docker, and hook shell wrappers
 - `commands/`: slash command specs installed into Claude Code
-- `agents/`: background agent instructions
+- `agents/`: background agent instructions (pipeline prompts, Notion stewards: notion-knowledge-steward.md, notion-project-steward.md, notion-tasks-steward.md, notion-enrichment-steward.md, notion-workspace-steward.md, notion-inbound-triage.md)
 - `skills/`: memory skill instructions and invocable recall skill
+- `opencode-commands/`: slash command specs installed into OpenCode
+- `scripts/`: migration, backfill, and cleanup scripts (Notion sync utilities)
+- `docs/`: design specs (notion-sync-spec.md, notion-webhook-troubleshooting.md)
 - `.claude-plugin/`: plugin manifest metadata
 
 ### `memory-dashboard/`

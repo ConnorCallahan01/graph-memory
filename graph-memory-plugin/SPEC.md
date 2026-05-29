@@ -1,6 +1,6 @@
 # Graph Memory v3 — Mental Model Architecture
 
-> Current implementation note (2026-05-18): v3 is now the default context path. The durable graph node store is unified on `nodes/`; `graph/.index.json` is the v3 lookup index, not a separate node tree. Set `GRAPH_MEMORY_V3=0` only as an emergency fallback while debugging the v3 session context path.
+> **Status: Largely implemented (2026-05-29).** The system now runs a merged v2/v3 hybrid. v2 provides the active pipeline (scribe → auditor → librarian → dreamer) plus MAP, WORKING, DREAMS, pinned nodes, and decay. v3 provides mental models (mind/), observations, project lenses, and session logs. Session-start injection reads model.json directly (unconditional) → MAP → PINNED → WORKING. The whisper layer was eliminated 2026-05-22 in favor of direct model.json reads. The v3-only pipeline (observer → compressor → dreamer-v3) is code-present but not active by default. The diverged graph/ directory has been archived to archive/v3-graph-backup/. This spec remains useful for understanding the four-layer mental model architecture.
 
 ## Overview
 
@@ -26,13 +26,13 @@ Layer 1: Global Mental Model
   - Cognitive style, decision patterns, preferences
   - Guardrails (anti-patterns — permanent, never decay)
   - Injected every session, ~300 tokens
-  - Storage: mind/model.json, mind/whisper.txt
+  - Storage: mind/model.json (mind/whisper.txt eliminated 2026-05-22)
 
 Layer 2: Project Mental Models
   - How the user thinks about this specific project
   - Tech stack, conventions, procedures, project-specific guardrails
   - Injected when project matches, ~400 tokens
-  - Storage: lenses/{project}/model.json, lenses/{project}/whisper.txt
+  - Storage: lenses/{project}/model.json (whisper.txt eliminated 2026-05-22)
 
 Layer 3: Session Logs
   - Factual log of recent sessions per project
@@ -46,28 +46,34 @@ Layer 4: The Graph (Detailed Memory)
   - Queried on demand via recall/search, not injected
   - Categories: patterns, anti-patterns, decisions, preferences,
     procedures, corrections, projects, concepts, architecture, people, tools
-  - Storage: nodes/{category}/{node}.md + graph/.index.json
+  - Storage: nodes/{category}/{node}.md + nodes/.index.json
 ```
 
 ### Pipeline
 
 ```
-v2 Pipeline (4 LLM passes per session):
+Active Pipeline (v2, runs by default):
   scribe → auditor → librarian → dreamer
+  Session hooks capture → scribe extracts deltas → auditor triages →
+  librarian applies updates → dreamer creates speculative fragments
 
-v3 Pipeline (1-2 LLM passes per session):
+v3 Pipeline (code present, not active by default):
   observer → compressor (periodic, not every session)
 
-  observer:    watches conversation, writes observations + session logs + graph nodes
-  compressor:  reads observations, folds into models, generates whispers
-  dreamer:     periodic background job against compressed models + graph
+  observer:    watches conversation, writes observations + session logs + nodes
+  compressor:  reads observations, folds into models
+  dreamer-v3:  periodic background job against compressed models + nodes
   deep-audit:  on-demand full graph walk for bloat management
+
+Note: The v2 pipeline is the active, proven pipeline. v3 pipeline code exists
+but GRAPH_MEMORY_V3=1 is needed to activate it. The hybrid reads v3 mental
+models at session start while using v2 pipeline for graph operations.
 ```
 
 ### Anti-Patterns
 
 Anti-patterns are first-class citizens:
-- Separate category: `graph/anti-patterns/`
+- Separate category: `nodes/anti-patterns/`
 - Higher confidence than patterns (typically 0.85-0.95)
 - Never decay — `decay_exempt: true`
 - Folded into whisper as guardrails
@@ -117,7 +123,7 @@ New projects get bootstrapped from the global mental model:
   sessions/
     {project}.jsonl             ← session summaries per project
 
-  graph/
+  nodes/
     patterns/
     anti-patterns/
     decisions/
@@ -130,7 +136,10 @@ New projects get bootstrapped from the global mental model:
     people/
     tools/
     .index.json                 ← query index for recall/search
-    .archive/                   ← faded/obsolete nodes
+
+  archive/
+    v3-graph-backup/            ← archived diverged graph/ directory
+    nodes/                      ← faded/obsolete nodes
 
   dreams/
     pending/
@@ -182,7 +191,7 @@ Rules:
 - < 3 days: full detail injected
 - 3-7 days: summary only (compressed by compressor)
 - > 7 days: only "decisions" and "shipped" kept
-- > 30 days: fully deleted (important stuff is in graph/model)
+- > 30 days: fully deleted (important stuff is in nodes/model)
 ```
 
 ---
@@ -269,18 +278,18 @@ bootstrap_project_doc({
 ```typescript
 async function sessionStart(cwd: string, sessionId: string): string {
   const project = detectProject(cwd);
-  ensureProjectLens(project); // create if first session
+  ensureProjectLens(project);
 
-  const globalWhisper = readOrGenerate("mind/whisper.txt");
-  const projectWhisper = readOrGenerate(`lenses/${project}/whisper.txt`);
+  const model = readJSON("mind/model.json");
+  const projectModel = readJSON(`lenses/${project}/model.json`);
   const sessionLog = readRecent(`sessions/${project}.jsonl`, 3);
 
-  const parts = [globalWhisper, projectWhisper, sessionLog].filter(Boolean);
+  const parts = [model, projectModel, sessionLog].filter(Boolean);
   return parts.join("\n\n---\n\n");
 }
 ```
 
-Three file reads. No MAP regeneration. No index rebuild. No pinned node scanning.
+Direct model.json reads. Whisper layer eliminated 2026-05-22. In the hybrid, session-start composes: mental-model (model.json direct, unconditional) → MAP (per-project) → PINNED (project-gated) → WORKING.
 
 ---
 
@@ -301,7 +310,7 @@ Create the new directory structure, type definitions, and harness adapter interf
 - [x] Define structured tool schemas for observer, compressor, dreamer
 - [x] Create `src/graph-memory/pipeline/observer.ts` (empty shell)
 - [x] Create `src/graph-memory/pipeline/compressor.ts` (empty shell)
-- [x] Update `config.ts` with new paths (mind/, lenses/, sessions/, graph/) alongside existing paths
+- [x] Update `config.ts` with new paths (mind/, lenses/, sessions/, nodes/) alongside existing paths
 - [x] Update `index.ts` to create new directory structure on init
 
 **Implementation notes:**
@@ -312,7 +321,7 @@ Create the new directory structure, type definitions, and harness adapter interf
 - `adapters/types.ts` defines HarnessAdapter interface plus per-harness config (supportsHooks, supportsMCP, projectDocFilename), with `isDegradedMode()` for codex
 - `pipeline/v3-tool-schemas.ts` has Zod schemas for all 16 structured tools (observe, log_session, upsert_node, get_observations, get_model, update_model, query_graph, get_anti_patterns, archive_observations, prune_session_logs, archive_graph_nodes, get_graph_stats, flag_for_deep_audit, get_models, get_graph_nodes, propose_dream, bootstrap_project_doc)
 - v3 paths added to config as `v3Mind`, `v3Lenses`, `v3Sessions`, `v3Graph`, `v3GraphIndex`, `v3GraphArchive`, `v3PipelineObservations` — no v2 paths removed
-- init creates `graph/` with all 11 categories (patterns, anti-patterns, decisions, preferences, procedures, corrections, projects, concepts, architecture, people, tools)
+- init creates `nodes/` with all 11 categories (patterns, anti-patterns, decisions, preferences, procedures, corrections, projects, concepts, architecture, people, tools)
 
 ### Phase 1: Observer ✅
 
@@ -344,7 +353,7 @@ Build the observer — the replacement for the scribe. This is the first LLM pas
 
 - Observer runs in **parallel** with scribe (both get enqueued for the same snapshot). This lets us validate observer output against scribe output before removing scribe in Phase 10
 - `agents/memory-observer.md` is ~130 lines, focused on classification rules and output format. Agent writes JSON files to `.pipeline/observations/` which are then processed by `observer-tools.ts`
-- `observer-tools.ts` reads the JSON output files and applies them: observe→observations.jsonl (global or project), log_session→sessions/{project}.jsonl, upsert_node→graph/{category}/{path}.md
+- `observer-tools.ts` reads the JSON output files and applies them: observe→observations.jsonl (global or project), log_session→sessions/{project}.jsonl, upsert_node→nodes/{category}/{path}.md
 - Anti-patterns get `confidence >= 0.85` and `decay_exempt: true` automatically
 - Job type `observer` has priority 0 (same as scribe), max 3 attempts
 - Event types added: `observer:fired`, `observer:pending`, `observer:complete`, `observer:warnings`, `observer:error`
@@ -371,10 +380,10 @@ Build the compressor — reads observations, produces mental models and whispers
   - New job type: "compressor"
   - Trigger: after 5 observer completions (configurable)
   - Also triggerable on demand via MCP action
-  - Generates whisper.txt files as output
 - [x] Implement whisper generation
   - Whisper text written by the LLM agent, capped by `enforceWhisperCap()` (400 tok global, 500 tok project)
   - Token estimation via chars/4 heuristic
+  - **Note:** Whisper layer was eliminated 2026-05-22. Session-start now reads model.json directly.
 - [x] Implement graph node archival in compressor
   - Archive nodes via `archive_graph_nodes` tool call with reason tracking
   - Anti-patterns protected (frontmatter check in agent prompt)
@@ -389,7 +398,7 @@ Build the compressor — reads observations, produces mental models and whispers
 - Compressor agent writes JSON files to `.pipeline/observations/` (same staging directory as observer, but with `comp_` prefixed filenames)
 - `compressor-tools.ts` processes 6 tool types: update_model, generate_whisper, archive_observations, archive_graph_nodes, prune_session_logs, flag_for_deep_audit
 - `maybeEnqueueCompressorFromObserverBacklog()` triggers after 5 completed observer jobs since the last compressor run
-- Graph node archival does frontmatter surgery to add `archived_reason` and `archived_date` before moving to `graph/.archive/`
+- Graph node archival does frontmatter surgery to add `archived_reason` and `archived_date` before moving to `archive/nodes/`
 - Whisper generation is LLM-driven (the agent writes the whisper text), with mechanical token cap enforcement
 - Compressor runs at priority 1 (same as working_update), with 3 max attempts and 10-minute timeout
 
@@ -594,19 +603,21 @@ Migrate existing graph data to the new format.
 
 Remove v2 code after v3 is validated.
 
+> **Note (2026-05-29):** v2 and v3 coexist in a merged hybrid architecture. The v2 pipeline (scribe → auditor → librarian → dreamer) remains the active pipeline. The v3-only pipeline (observer → compressor → dreamer-v3) is code-present but not active by default. Items below are retained for historical reference but are not planned as described.
+
 **Tasks:**
 
-- [ ] Remove old pipeline components:
+- [ ] ~~Remove old pipeline components~~ — Not planned: v2/v3 hybrid is the target architecture.
   - `pipeline/spawn.ts` (already deprecated)
   - `pipeline/librarian.ts` (replaced by compressor)
   - Old scribe-related code in daemon.ts
-- [ ] Remove old context file generation:
+- [ ] ~~Remove old context file generation~~ — Not planned: MAP, WORKING, DREAMS are actively used alongside mental models.
   - MAP.md generation (replaced by whispers)
   - PRIORS.md (replaced by global model)
   - SOMA.md (replaced by global model emotional section)
   - WORKING.md (replaced by session logs)
   - DREAMS.md (dreamer writes directly)
-- [ ] Remove old agent prompts:
+- [ ] ~~Remove old agent prompts~~ — Not planned: scribe, auditor, librarian prompts remain active.
   - memory-scribe.md (replaced by memory-observer.md)
   - memory-auditor.md (replaced by compressor)
   - memory-librarian.md (replaced by compressor)
@@ -615,8 +626,8 @@ Remove v2 code after v3 is validated.
   - Show anti-patterns as separate view
   - Show observation stream
   - Keep graph explorer for Layer 4
-- [ ] Remove feature flag — v3 is the only path
-- [ ] Update documentation (README, CLAUDE.md, PRODUCT.md)
+- [ ] ~~Remove feature flag~~ — Not planned: `GRAPH_MEMORY_V3` flag retained for the hybrid toggle.
+- [ ] ~~Update documentation~~ — Superseded by CLAUDE.md in repo root.
 
 ---
 
@@ -643,7 +654,7 @@ Phase 0 (types/structure)
 
 Phase 9 (migration) [depends on 1-8]
   │
-  └──► Phase 10 (cleanup) [depends on 9]
+  └──► Phase 10 (cleanup) [depends on 9 — not planned, v2/v3 hybrid is target]
 ```
 
 Phase 4 (graph redesign) and Phases 1-3 (observer/compressor/session-start) can be built in parallel.
@@ -660,17 +671,23 @@ Phase 4 (graph redesign) and Phases 1-3 (observer/compressor/session-start) can 
    - Observations about something entirely new (add tentatively)
    - Model entries getting verbose (compress aggressively)
    - Deciding when an observation is "absorbed" vs still needs to exist separately
+   
+   **Resolution:** Compressor prompt was implemented in `agents/memory-compressor.md`. Handles all five cases. Runs periodically, not every session.
 
 2. **Observation quality control.** The observer is more open-ended than the current scribe. Bad observations compress into bad model entries which become bad whispers. No human-in-the-loop exists yet. Options:
    - Confidence threshold: only fold observations > 0.7 into model
    - Multi-observer: run observer twice and only keep observations both agree on (expensive)
    - User correction: when user corrects something the whisper caused, downgrade the source observation
    - Trust gradient: new observations are tentative until reinforced by 2+ sessions
+   
+   **Resolution:** Handled via the auditor triage pass in the v2 pipeline (mechanical noise/bloat detection) plus Array.isArray guards on edges parsing to prevent observer crashes.
 
 3. **Cold start problem.** The system is minimal for the first 2-3 sessions in a new project. The global whisper helps (guardrails carry over) but the project whisper is empty. Mitigation options:
    - Bootstrap the project whisper from the first session more aggressively
    - Allow the agent to query the graph on first session even without a whisper
    - Accept that 2-3 sessions of "getting to know you" is natural and correct
+   
+   **Resolution:** model.json reads are unconditional — no whisper dependency. Fallback path exists for empty data (falls through to v2 context). First-session experience is handled.
 
 4. **Migration fidelity.** Converting 771 existing nodes into a mental model is lossy. Some nodes will compress well, others won't. The migration needs to:
    - Preserve anti-patterns at full fidelity
@@ -685,12 +702,16 @@ Phase 4 (graph redesign) and Phases 1-3 (observer/compressor/session-start) can 
    - Global model updates are atomic (one compressor run at a time)
    - Observer jobs can run in parallel (per-session, no conflicts)
    - Graph index updates are atomic (file lock or append-only)
+   
+   **Resolution:** Handled — project chain locks in job-queue prevent cross-project races. Each project gets its own job chain.
 
 6. **Locking model.** The current system has a daemon lock and a consolidation lock. The new system needs:
    - Daemon lock (same — one daemon per graph root)
    - Compressor lock (only one compressor run at a time — it rewrites model files)
    - No observer lock needed (append-only writes)
    - Graph index lock for incremental updates
+   
+   **Resolution:** Handled — daemon lock, project locks, no observer lock needed. As designed.
 
 ### Performance
 
@@ -712,10 +733,14 @@ Phase 4 (graph redesign) and Phases 1-3 (observer/compressor/session-start) can 
 10. **Dashboard redesign.** The memory dashboard shows the current graph/pipeline. It needs significant frontend work to show mental models, project lenses, session logs, and anti-patterns. This is a full frontend redesign not scoped here.
 
 11. **Ambient recall.** The current Pi and OpenCode extensions scan the graph on every user message and inject relevant nodes. Does this survive in v3? The whisper handles most cases, but for deep queries, ambient recall of the graph might still be valuable. Need to decide whether to keep, remove, or redesign this feature.
+   
+   **Resolution:** Kept — `scoring.ts` is a shared module with `ambientRecall()`. All extensions use thin wrappers around it.
 
 12. **Multiple projects in one session.** If Patrick opens agent_memory but then cd's into a subdirectory that's a different git repo, does the project context switch? The current system doesn't handle this well. The new system should at least detect project changes mid-session.
 
 13. **Explicit memory commands.** The user can currently call `graph_memory(action="remember", ...)` to explicitly store knowledge. This still works against Layer 4 (the graph). But should explicit remember also update the project model immediately? Or wait for the next compressor run? The tradeoff is freshness vs. cost.
+   
+   **Resolution:** Explicit remember works against the graph (nodes/). Compressor folds into model asynchronously. This is the correct tradeoff.
 
 14. **Dreamer input size.** The current dreamer reads the full MAP. The new dreamer reads compressed models. But compressed models might be too abstract for creative connections. Should the dreamer also sample graph nodes for detail? How many? This affects LLM cost.
 
@@ -731,8 +756,12 @@ Phase 4 (graph redesign) and Phases 1-3 (observer/compressor/session-start) can 
     These tests don't exist yet and aren't scoped in the phases above.
 
 17. **Skillforge.** The current system has a skillforge pipeline that converts high-access nodes into installable agent skills. This feature is not addressed in v3. It needs to be adapted to work against the new graph structure, but the core logic (score candidates, generate skill files) should still apply.
+   
+   **Resolution:** Adapted and operational. Cluster-based skill selection, harness adapters, stricter refresh cooldowns.
 
 18. **External inputs.** The current system has Gmail/Calendar/Slack input normalization. This is a separate subsystem that feeds into the graph. It's not affected by the v3 redesign architecturally, but the pipeline integration (how external inputs trigger observations) needs to be defined.
+   
+   **Resolution:** Operational — `.inputs/` directory with per-source normalization (gmail/, calendar/, slack/) and config.json.
 
 19. **Memory sharing.** Can two users share a graph? Can a team have a shared project mental model? This is out of scope for v3 but the data model should not prevent it in the future.
 

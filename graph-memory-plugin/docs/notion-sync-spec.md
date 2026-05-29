@@ -635,3 +635,142 @@ For projects with active sessions yesterday, the Notion sync agent:
 - **Multiple Notion workspaces** — Support different workspaces for different purposes
 - **Notion comments as observations** — Your comments on Notion pages could become graph observations
 - **Bi-directional task creation** — Tasks created directly in Notion get synced back as new openThreads
+
+---
+
+## Operational Guide
+
+### Quick Start
+
+1. Run `/notion-setup` — creates the Notion workspace structure (top-level page, databases, wiki pages)
+2. Set `NOTION_API_TOKEN` in your environment or config
+3. Run `/notion-sync` — performs the first sync
+4. (Optional) Set up webhooks for inbound sync — see [notion-webhook-troubleshooting.md](./notion-webhook-troubleshooting.md)
+
+### Sync Cycle
+
+The outbound sync runs in four phases:
+
+1. **Diff phase** — compares current graph state against `lastSyncAt` timestamp in `.notion-sync-state.json`. Scans all data sources (nodes, mental models, session logs, working state, briefs, dreams) and classifies each item as new, updated, archived, or unchanged. Groups results into batches (tasks, decisions, per-project wiki content, global wiki, dreams, briefs). Writes the diff to `.notion-sync-input.json`.
+
+2. **Plan phase** — steward agents generate per-area sync plans. Each steward reads the diff report filtered to its domain, cross-references against the workspace manifest, and produces a structured plan of creates, updates, and archives. Plans are written to `.notion-sync-plan.json`.
+
+3. **Execute phase** — applies changes to Notion in batches of 100, sorted by confidence. Uses `ntn` CLI for all Notion API calls. State is updated incrementally after each batch succeeds. If a single page fails, it is skipped and the rest continue.
+
+4. **State update** — writes new `lastSyncAt`, content hashes, and any new page IDs to `.notion-sync-state.json`. Hash gates (`lastSyncedHash` vs `lastNotionHash`) are refreshed to enable inbound change detection on the next cycle.
+
+### Steward Agents
+
+Five specialized stewards divide the sync workload by domain. Each reads the diff report filtered to its area, cross-references the workspace manifest, and produces an independent plan.
+
+#### Knowledge Steward
+
+Syncs patterns, concepts, anti-patterns, corrections, preferences, dreams, and decisions from graph nodes into Notion database rows. Manages three Notion databases:
+
+- **Patterns & Insights** — one row per pattern/concept/anti-pattern/correction/preference node, with Category, Insight, Confidence, and First Seen properties
+- **Dreams & Experiments** — one row per dream fragment (pending or integrated), with Status, Confidence, Prediction, and Source Nodes properties
+- **Decisions** — one row per decision node, with Context, Date, and Project relation properties
+
+Reads from `nodes/patterns/`, `nodes/concepts/`, `nodes/anti-patterns/`, `nodes/corrections/`, `nodes/decisions/`, `nodes/preferences/`, and `dreams/`. Triggered by any diff items with matching batch types.
+
+#### Project Steward
+
+Syncs project-level information from lenses and working state into the Projects database. Each project gets a row with Name, Status (Active/Paused/Stale), Overview, Tech Stack, Last Active, and Open Threads properties. The body is written as a project brief (narrative prose, not a raw data dump).
+
+Reads from `lenses/{project}/model.json`, `lenses/{project}/whisper.txt`, `lenses/{project}/observations.jsonl`, `working/projects/{project}.md`, and `working/projects/{project}.state.json`. Triggered by diff items with `batch` starting with `project:`.
+
+#### Tasks Steward
+
+Manages the full task lifecycle in the Tasks database — creating new tasks from working state, updating statuses, completing tasks via git commit matching, rotating stale items to Backlog, and archiving dead tasks.
+
+Reads from all `working/projects/*.md` and `working/projects/*.state.json` files (always, regardless of diff), plus `nodes/decisions/` and `nodes/patterns/` for context on new tasks. Status resolution follows: `nextPickup` → Next, `tasksWorkedOn` → In Progress, `blocked`/`didntWork` → Blocked, `shipped`/`worked`/commits → Done, no signal in 7+ days → Backlog. Max 5 creates per cycle. Triggered on every sync (tasks are derived from working state, not direct node changes).
+
+#### Enrichment Steward
+
+Takes sparse human-created Notion items (tasks with no body, decisions with no context, empty wiki sections) and enriches them using graph context. Unlike outbound stewards, it reads a specific sparse item and uses graph knowledge to flesh it out.
+
+Reads from `working/projects/`, `nodes/decisions/`, `nodes/patterns/`, and project models to find relevant context. Produces two outputs: an enrichment plan (what to write back to Notion) and memory deltas (observations recording the human's creation). Enrichment adds to sparse content — it never overwrites existing human text. Triggered by the inbound triage pipeline when a sparse item is detected.
+
+#### Workspace Steward
+
+Owns the How I Think wiki page, the Briefs database, and workspace-level hygiene. The How I Think page synthesizes the global mental model into narrative paragraphs covering cognitive style, decision patterns, preferences, guardrails, and emotional profile.
+
+Reads from `mind/model.json`, `nodes/preferences/`, `nodes/anti-patterns/`, and `briefs/daily/`. Always rotates brief statuses (Today/Yesterday/Old) on every sync cycle, regardless of whether anything else changed. Creates new brief rows when brief files exist but no Notion row does. Triggered by global-model changes or new daily briefs.
+
+### Inbound Sync
+
+The inbound path handles human edits made in Notion:
+
+1. **Webhook event** — Notion sends an event to the `/notion-webhook` endpoint (or, in daily polling mode, the sync reads all tracked pages via `ntn pages get <id>` and computes content hashes).
+
+2. **Triage** — a `notion_inbound_triage` job classifies each edit by type: content change, new page creation, property update, or deletion. Sparse items (new tasks with no body, empty decisions) are flagged for enrichment. The triage output is written to `.notion-sync-input.json` with inbound items separated by type.
+
+3. **Enrichment** — a `notion_inbound_enrich` job adds context to sparse items using the enrichment steward. For substantive edits, the inbound agent (`agents/memory-notion-inbound.md`) maps each change to the appropriate graph action: preference edits update nodes, new sections create observations, deletions lower confidence, task status changes update session/working state, guardrail changes always apply.
+
+4. **Application** — inbound deltas are written to `.deltas/notion-inbound-{date}.json` and picked up by the normal scribe → auditor → librarian pipeline. The inbound agent does not create nodes directly — it creates observations and deltas. The pipeline decides whether to promote them to full nodes.
+
+### Three-Way Merge
+
+When both the graph node and the Notion page changed since last sync:
+
+- **Human intent wins.** If both sides modified the same section, the human version is kept and the agent version is appended as a callout/blockquote in the Notion page.
+- **Agent info preserved.** If both sides added different sections, both are kept. If the human deleted content that the agent updated, the deletion stands but an observation is created with the lost agent content.
+- **Hash gates prevent redundant syncs.** Content hashes are compared before any write. If `lastSyncedHash == lastNotionHash`, the system knows it wrote the current Notion content and any difference is a human edit. If both hashes diverged from the baseline, merge is triggered.
+- **Manual override.** Force a full sync (ignoring hashes) with `forceFullSync: true` in the job payload: `graph_memory(action="notion_sync")` with a manual trigger.
+
+### Monitoring
+
+Check these files to monitor sync health:
+
+```bash
+cat ~/.graph-memory/.notion-sync-state.json          # current sync state + lastSyncAt
+cat ~/.graph-memory/.notion-sync-plan.json            # latest sync plan (after plan phase)
+ls ~/.graph-memory/.pipeline-logs/notion_sync-*.log   # pipeline worker logs
+ls ~/.graph-memory/.jobs/failed/notion_sync_*.json    # failed jobs
+grep "notion" ~/.graph-memory/.logs/activity.jsonl | tail -20  # recent Notion-related activity
+```
+
+### Troubleshooting
+
+**All API calls fail with keychain error**
+
+The `ntn` CLI checks macOS Keychain before the `NOTION_API_TOKEN` env var, causing failures inside Docker containers where Keychain is unavailable. Fix: ensure `NOTION_API_TOKEN` is set in the Docker environment. The `execNtn` function injects it automatically.
+
+**Sync hangs at "planning"**
+
+A steward agent likely timed out. Check pipeline logs for the specific steward that stalled:
+```bash
+grep "timeout\|error\|steward" ~/.graph-memory/.pipeline-logs/notion_sync-*.log | tail -20
+```
+
+**Duplicate databases after re-running setup**
+
+The `/notion-setup` command is not idempotent — re-running it creates duplicate databases and wiki pages. Delete duplicates manually in Notion.
+
+**Webhook not firing**
+
+See [notion-webhook-troubleshooting.md](./notion-webhook-troubleshooting.md).
+
+**Content hash mismatch after manual edits**
+
+Content hashes track what was last synced. If hashes are stale or mismatched, force a full sync to reset them:
+```bash
+graph_memory(action="notion_sync")
+```
+
+### Configuration
+
+Key config options in `config.yml`:
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `notionSync.enabled` | boolean | `false` | Enable/disable Notion sync |
+| `notionSync.dailyHour` | number | `3` | Hour of day (local) for automatic sync |
+| `notionSync.skipInbound` | boolean | `false` | Skip inbound triage/enrichment phase |
+| `notionSync.maxBatchSize` | number | `30` | Items per LLM chunk |
+| `NOTION_API_TOKEN` | string | — | Notion API token (env var, required) |
+| `NOTION_WEBHOOK_SECRET` | string | — | Webhook verification secret (env var, for inbound) |
+
+### Notion API Version
+
+Uses Notion API v2026-03-11. Properties are managed via data sources, not databases. This affects how properties are created and updated — use the data sources API for property management rather than the databases API.

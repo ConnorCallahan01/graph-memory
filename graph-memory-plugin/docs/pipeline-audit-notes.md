@@ -144,3 +144,12 @@ Live endpoint check on 2026-05-18:
 - `project-working.ts`, `working-files.ts`, and active project tracking for project handoff correctness.
 - Notion sync modules and tests, especially because several dirty local edits currently touch this pipeline.
 - install scripts for Claude/OpenCode/pi release surface and dist/source assumptions.
+
+## 2026-05-29 Update
+
+- **Edges/anti_edges parsing hardened:** `Array.isArray()` guards added to `graph-ops.ts`, `mechanical-apply.ts`, `librarian.ts`, `preflight.ts`, `observer-tools.ts`, and `graph-index.ts`. Auditor was crashing on YAML frontmatter values that parsed as strings or objects instead of arrays.
+- **Daemon steward isolation:** try/catch wrapping per steward in daemon tick prevents one failing steward from aborting the entire housekeeping cycle.
+- **execNtn env var injection:** `NOTION_API_TOKEN` is now injected into the `ntn` child process environment, bypassing macOS Keychain lookup inside Docker containers where Keychain is unavailable.
+- **Missing pipeline files tracked by git:** `graph-index.ts`, `dreamer-tools.ts`, and `tool-schemas.ts` were absent from git due to a root `.gitignore` pattern matching `src/graph-memory/`. Force-added with `git add -f`.
+- **Root CHANGELOG.md out of sync:** Plugin `CHANGELOG.md` had version entries that the root `CHANGELOG.md` lacked. Release workflow reads the root file. Added matching 3.0.1 entry to root.
+- **Release workflow bracket format:** Release workflow expects `## [X.Y.Z]` heading format in root `CHANGELOG.md`, not `## X.Y.Z`. Fixed heading to include brackets.
