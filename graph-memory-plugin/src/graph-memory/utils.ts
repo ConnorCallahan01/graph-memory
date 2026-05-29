@@ -61,6 +61,7 @@ export function getNodeDepth(nodePath: string): number {
  * Extract the first paragraph of markdown content (after removing heading).
  */
 export function extractFirstParagraph(content: string): string {
+  if (typeof content !== "string") return "";
   const cleaned = content.replace(/^#[^\n]+\n+/, "").trim();
   const para = cleaned.split("\n\n")[0];
   return para?.trim() || "";

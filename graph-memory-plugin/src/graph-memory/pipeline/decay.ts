@@ -6,6 +6,22 @@ import { activityBus } from "../events.js";
 import { walkNodes } from "../utils.js";
 import { rebuildArchiveIndex } from "./graph-ops.js";
 
+function patchFrontmatterFields(raw: string, fields: Record<string, string | number | boolean>): string {
+  const closeIdx = raw.indexOf("---", 3);
+  if (closeIdx === -1) return raw;
+  let fm = raw.substring(3, closeIdx);
+  for (const [key, value] of Object.entries(fields)) {
+    const yamlVal = typeof value === "string" ? `'${value}'` : String(value);
+    const re = new RegExp(`^${key}:\\s.*$`, "m");
+    if (re.test(fm)) {
+      fm = fm.replace(re, `${key}: ${yamlVal}`);
+    } else {
+      fm = fm.trimEnd() + `\n${key}: ${yamlVal}\n`;
+    }
+  }
+  return `---${fm}---` + raw.substring(closeIdx + 3);
+}
+
 function parseAnchorDate(value: unknown): Date | null {
   if (typeof value !== "string" || !value.trim()) return null;
   const date = new Date(value);
@@ -61,40 +77,72 @@ export function runDecay(reinforcedPaths: Set<string> = new Set()): {
       const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = matter(raw);
 
-      // Skip pinned nodes — they never decay
-      if (parsed.data.pinned === true) {
-        continue;
-      }
+      const closeIdx = raw.indexOf("---", 3);
+      const fmText = closeIdx > 0 ? raw.substring(0, closeIdx) : "";
 
-      if (parsed.data.decay_exempt === true) {
-        continue;
-      }
+      const getConfidence = (): number => {
+        if (typeof parsed.data.confidence === "number") return parsed.data.confidence;
+        const m = fmText.match(/^confidence:\s*(\d+\.?\d*)\s*$/m);
+        return m ? parseFloat(m[1]) : 0.5;
+      };
+
+      const getLastDecayAt = (): string | undefined => {
+        if (typeof parsed.data.last_decay_at === "string") return parsed.data.last_decay_at;
+        const m = fmText.match(/^last_decay_at:\s*['"]?([^'"\n]+)['"]?\s*$/m);
+        return m ? m[1].trim() : undefined;
+      };
+
+      const getPinned = (): boolean => {
+        if (typeof parsed.data.pinned === "boolean") return parsed.data.pinned;
+        return /^pinned:\s*true\s*$/m.test(fmText);
+      };
+
+      const getExempt = (): boolean => {
+        if (typeof parsed.data.decay_exempt === "boolean") return parsed.data.decay_exempt;
+        return /^decay_exempt:\s*true\s*$/m.test(fmText);
+      };
+
+      const getDecayRate = (): number => {
+        if (typeof parsed.data.decay_rate === "number") return parsed.data.decay_rate;
+        const m = fmText.match(/^decay_rate:\s*(\d+\.?\d*)\s*$/m);
+        return m ? parseFloat(m[1]) : 0.05;
+      };
+
+      const getAnchorDate = (): Date | null => {
+        const lda = getLastDecayAt();
+        const candidates = [
+          parseAnchorDate(lda),
+          parseAnchorDate(parsed.data.updated),
+          parseAnchorDate(parsed.data.created),
+        ].filter((v): v is Date => v instanceof Date);
+        if (candidates.length === 0) return null;
+        return new Date(Math.max(...candidates.map(d => d.getTime())));
+      };
+
+      if (getPinned()) continue;
+      if (getExempt()) continue;
 
       // Skip nodes that were reinforced this session
       if (reinforcedPaths.has(nodePath)) {
-        // Reset updated timestamp for reinforced nodes
-        parsed.data.updated = now.toISOString().slice(0, 10);
-        parsed.data.last_decay_at = now.toISOString();
-        fs.writeFileSync(filePath, matter.stringify(parsed.content, parsed.data));
+        fs.writeFileSync(filePath, patchFrontmatterFields(raw, { updated: now.toISOString().slice(0, 10), last_decay_at: now.toISOString() }));
         continue;
       }
 
-      const baseConfidence = typeof parsed.data.confidence === "number" ? parsed.data.confidence : 0.5;
-      const decayRate = typeof parsed.data.decay_rate === "number" ? parsed.data.decay_rate : 0.05;
-      const anchorDate = getDecayAnchor(parsed.data);
+      const baseConfidence = getConfidence();
+      const decayRate = getDecayRate();
+      const anchorDate = getAnchorDate();
       const lastAccessedAt = parseAnchorDate(parsed.data.last_accessed);
 
-      if (!anchorDate) continue; // Can't decay without a usable date anchor
+      if (!anchorDate) continue;
 
       const daysSince = (now.getTime() - anchorDate.getTime()) / (1000 * 60 * 60 * 24);
       const daysSinceAccess = lastAccessedAt
         ? (now.getTime() - lastAccessedAt.getTime()) / (1000 * 60 * 60 * 24)
         : Number.POSITIVE_INFINITY;
 
-      if (daysSince < 1) continue; // No decay within 24h
-      if (daysSinceAccess < recentAccessGraceDays) continue; // Recently used nodes should not decay at all
+      if (daysSince < 1) continue;
+      if (daysSinceAccess < recentAccessGraceDays) continue;
 
-      // Incremental half-life formula from the last decay/access/update anchor.
       const effectiveConfidence = baseConfidence * Math.pow(0.5, (daysSince / halfLifeDays) * (decayRate / 0.05));
       const recentlyAccessed = daysSinceAccess < archiveAccessProtectionDays;
       const frequentlyAccessed = (parsed.data.access_count || 0) >= archiveAccessCountProtection;
@@ -113,7 +161,7 @@ export function runDecay(reinforcedPaths: Set<string> = new Set()): {
         parsed.data.archived_reason = "decay";
         parsed.data.archived_date = now.toISOString().slice(0, 10);
         parsed.data.last_decay_at = now.toISOString();
-        fs.writeFileSync(filePath, matter.stringify(parsed.content, parsed.data));
+        fs.writeFileSync(filePath, patchFrontmatterFields(raw, { confidence: parsed.data.confidence, archived_reason: "decay", archived_date: now.toISOString().slice(0, 10), last_decay_at: now.toISOString() }));
         fs.renameSync(filePath, destPath);
 
         archivedCount++;
@@ -129,9 +177,8 @@ export function runDecay(reinforcedPaths: Set<string> = new Set()): {
         const decayedConfidence = canArchive
           ? effectiveConfidence
           : Math.max(effectiveConfidence, confidenceFloor);
-        parsed.data.confidence = Math.round(decayedConfidence * 1000) / 1000;
-        parsed.data.last_decay_at = now.toISOString();
-        fs.writeFileSync(filePath, matter.stringify(parsed.content, parsed.data));
+        const rounded = Math.round(decayedConfidence * 1000) / 1000;
+        fs.writeFileSync(filePath, patchFrontmatterFields(raw, { confidence: rounded, last_decay_at: now.toISOString() }));
         decayedCount++;
       }
     } catch {

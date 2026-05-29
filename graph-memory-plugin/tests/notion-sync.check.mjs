@@ -41,7 +41,7 @@ function importModule(name) {
 }
 
 function populateSampleData(graphRoot) {
-  const graphDir = path.join(graphRoot, "graph");
+  const graphDir = path.join(graphRoot, "nodes");
 
   fs.writeFileSync(path.join(graphDir, "patterns", "atomic-commits.md"), matter.stringify(
     "# Atomic Commits\n\nPrefer small focused commits over large ones.",
@@ -307,7 +307,7 @@ test("diff: synced state detects only changes", async () => {
     const secondDiff = mod.buildNotionDiff(state);
     assert.equal(secondDiff.stats.unchanged, firstDiff.items.length, "All items unchanged after sync");
 
-    const nodePath = path.join(graphRoot, "graph", "patterns", "atomic-commits.md");
+    const nodePath = path.join(graphRoot, "nodes", "patterns", "atomic-commits.md");
     const original = fs.readFileSync(nodePath, "utf-8");
     fs.writeFileSync(nodePath, original + "\n\nUpdated content for testing.");
 
@@ -1141,10 +1141,12 @@ test("inbound: applyInboundDeltas creates observation files", async () => {
     assert.equal(result.errors.length, 0, "No errors");
 
     const mindDir = path.join(graphRoot, "mind");
-    const obsFiles = fs.readdirSync(mindDir).filter((f) => f.startsWith("notion-inbound-") && f.endsWith(".json"));
-    assert.ok(obsFiles.length > 0, "Observation file created");
+    const obsPath = path.join(mindDir, "observations.jsonl");
+    assert.ok(fs.existsSync(obsPath), "Observation jsonl created");
 
-    const obs = JSON.parse(fs.readFileSync(path.join(mindDir, obsFiles[0]), "utf-8"));
+    const obsLines = fs.readFileSync(obsPath, "utf-8").trim().split("\n");
+    assert.ok(obsLines.length > 0, "Observation line written");
+    const obs = JSON.parse(obsLines[0]);
     assert.equal(obs.source, "notion-inbound");
     assert.ok(obs.tags.includes("source:notion-inbound"));
   } finally {
@@ -1161,7 +1163,7 @@ test("inbound: applyInboundDeltas lowers confidence", async () => {
 
     const mod = await importModule("pipeline/notion-inbound.js");
 
-    const nodePath = path.join(graphRoot, "graph", "patterns", "atomic-commits.md");
+    const nodePath = path.join(graphRoot, "nodes", "patterns", "atomic-commits.md");
     const contentBefore = fs.readFileSync(nodePath, "utf-8");
     assert.ok(contentBefore.includes("confidence: 0.8"), "Has initial confidence");
 
@@ -1546,4 +1548,3 @@ test("commands: notion-sync.md exists", async () => {
   const claudeSyncPath = path.join(pluginDir, "commands", "notion-sync.md");
   assert.ok(fs.existsSync(claudeSyncPath), "Claude Code notion-sync command exists");
 });
-

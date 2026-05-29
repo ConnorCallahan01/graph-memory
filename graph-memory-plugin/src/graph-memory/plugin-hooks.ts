@@ -1,4 +1,5 @@
 import fs from "fs";
+import path from "path";
 
 export interface HookCommand {
   type: "command";
@@ -18,6 +19,12 @@ export function loadPluginHooks(filePath: string): PluginHooksFile {
   return JSON.parse(fs.readFileSync(filePath, "utf-8")) as PluginHooksFile;
 }
 
+const PLUGIN_ROOT = "${CLAUDE_PLUGIN_ROOT}";
+
+function resolveCommand(command: string, pluginDir: string): string {
+  return command.replaceAll(PLUGIN_ROOT, pluginDir);
+}
+
 function sameHookCommand(left: HookCommand, right: HookCommand): boolean {
   return left.type === right.type && left.command === right.command;
 }
@@ -30,8 +37,10 @@ function sameHookEntry(left: HookEntry, right: HookEntry): boolean {
 
 export function mergeHooksIntoSettings(
   settings: Record<string, unknown>,
-  pluginHooks: PluginHooksFile
+  pluginHooks: PluginHooksFile,
+  pluginDir?: string
 ): boolean {
+  const resolvedDir = pluginDir || "";
   const hooksRoot =
     typeof settings.hooks === "object" && settings.hooks !== null
       ? (settings.hooks as Record<string, unknown>)
@@ -51,11 +60,19 @@ export function mergeHooksIntoSettings(
       changed = true;
     }
 
-    for (const entry of entries) {
-      if (existing.some((candidate) => sameHookEntry(candidate, entry))) {
+    for (const rawEntry of entries) {
+      const resolved: HookEntry = {
+        matcher: rawEntry.matcher,
+        hooks: rawEntry.hooks.map((h) => ({
+          type: h.type,
+          command: resolveCommand(h.command, resolvedDir),
+        })),
+      };
+
+      if (existing.some((candidate) => sameHookEntry(candidate, resolved))) {
         continue;
       }
-      existing.push(entry);
+      existing.push(resolved);
       changed = true;
     }
   }
@@ -65,10 +82,13 @@ export function mergeHooksIntoSettings(
 
 export function registerPluginHooks(settingsPath: string, hooksPath: string): boolean {
   const settings = fs.existsSync(settingsPath)
-    ? (JSON.parse(fs.readFileSync(settingsPath, "utf-8")) as Record<string, unknown>)
+    ? (JSON.parse(fs.readFileSync(settingsPath, "utf8")) as Record<string, unknown>)
     : {};
   const pluginHooks = loadPluginHooks(hooksPath);
-  const changed = mergeHooksIntoSettings(settings, pluginHooks);
+  const pluginDir = fs.existsSync(hooksPath)
+    ? fs.realpathSync(path.dirname(path.dirname(hooksPath)))
+    : "";
+  const changed = mergeHooksIntoSettings(settings, pluginHooks, pluginDir);
 
   if (changed || !fs.existsSync(settingsPath)) {
     fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2) + "\n");

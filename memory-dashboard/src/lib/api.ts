@@ -181,17 +181,17 @@ export interface ProjectWorkingFile {
 }
 
 export interface SkillforgeManifest {
-  source_node: string
+  version?: number
+  source_nodes: string[]
   skill_name: string
   generated_at: string
   score: number
   project: string
   project_root: string | null
   content_hash: string
-  files: {
-    claude_command: string
-    opencode_command: string
-  }
+  candidate_type: "cluster" | "single_node"
+  canonical_content_path: string
+  installed_harnesses: Record<string, string>
   reference_nodes: string[]
   refresh_count: number
   last_refreshed_at: string | null
@@ -223,9 +223,10 @@ export interface WorkerLogDetail extends WorkerLogSummary {
 
 export interface StartupContextLayer {
   id: 'priors' | 'soma' | 'map' | 'working_global' | 'working_project' | 'dreams'
+    | 'global_whisper' | 'project_whisper' | 'session_log' | 'guardrails'
   label: string
   subtitle: string
-  owner: 'librarian' | 'dreamer'
+  owner: 'librarian' | 'dreamer' | 'compressor' | 'observer'
   injected: boolean
   updatedAt: string | null
   tokens: number
@@ -520,8 +521,9 @@ export async function fetchSkillContent(name: string): Promise<{ content: string
   return res.json()
 }
 
-export async function fetchStartupContext(): Promise<StartupContext> {
-  const res = await fetch('/api/startup-context')
+export async function fetchStartupContext(project?: string): Promise<StartupContext> {
+  const url = project ? `/api/startup-context?project=${encodeURIComponent(project)}` : '/api/startup-context'
+  const res = await fetch(url)
   if (!res.ok) throw new Error(`API error: ${res.status}`)
   return res.json()
 }
@@ -576,13 +578,13 @@ export interface WhisperResponse {
 }
 
 export async function fetchModel(): Promise<ModelResponse | null> {
-  const res = await fetch('/api/v3/model')
+  const res = await fetch('/api/model')
   if (!res.ok) return null
   return res.json()
 }
 
 export async function fetchWhisper(): Promise<WhisperResponse | null> {
-  const res = await fetch('/api/v3/whisper')
+  const res = await fetch('/api/whisper')
   if (!res.ok) return null
   return res.json()
 }
@@ -601,4 +603,20 @@ export function subscribeToEvents(onEvent: (type: string) => void): () => void {
     } catch {}
   }
   return () => es.close()
+}
+
+export interface PipelineStageProgress {
+  stage: string
+  label: string
+  current: number
+  threshold: number | null
+  remaining: number | null
+  status: 'counting' | 'ready' | 'running' | 'queued' | 'waiting' | 'idle' | 'done'
+  detail: string
+}
+
+export async function fetchPipelineProgress(project: string): Promise<PipelineStageProgress[]> {
+  const res = await fetch(`/api/pipeline-progress/${encodeURIComponent(project)}`)
+  if (!res.ok) return []
+  return res.json()
 }

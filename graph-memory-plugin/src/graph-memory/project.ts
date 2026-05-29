@@ -8,6 +8,7 @@ import fs from "fs";
 import path from "path";
 import { execSync } from "child_process";
 import { CONFIG } from "./config.js";
+import { sanitizeProjectSlug } from "./working-files.js";
 
 export interface ProjectInfo {
   name: string;
@@ -76,6 +77,7 @@ export function detectProject(cwd: string): ProjectInfo {
   }
 
   projectCache.set(cwd, result);
+  migrateProjectState(result.name);
   return result;
 }
 
@@ -199,4 +201,52 @@ export function cleanActiveProjects(): void {
       }
     } catch { /* skip */ }
   }
+}
+
+function tryRename(oldPath: string, newPath: string): boolean {
+  if (!fs.existsSync(oldPath) || fs.existsSync(newPath)) return false;
+  try {
+    fs.mkdirSync(path.dirname(newPath), { recursive: true });
+    fs.renameSync(oldPath, newPath);
+    return true;
+  } catch { return false; }
+}
+
+function tryRenameContents(oldDir: string, newDir: string): number {
+  if (!fs.existsSync(oldDir) || fs.existsSync(newDir)) return 0;
+  try {
+    fs.mkdirSync(path.dirname(newDir), { recursive: true });
+    fs.renameSync(oldDir, newDir);
+    return 1;
+  } catch { return 0; }
+}
+
+export function migrateProjectState(projectName: string): { migrated: string[] } {
+  const slug = sanitizeProjectSlug(projectName);
+  if (slug === projectName) return { migrated: [] };
+
+  const migrated: string[] = [];
+
+  const lensOld = path.join(CONFIG.paths.lenses, projectName);
+  const lensNew = path.join(CONFIG.paths.lenses, slug);
+  if (tryRenameContents(lensOld, lensNew)) migrated.push(`lenses/${projectName} → lenses/${slug}`);
+
+  const nestedLensOld = path.join(CONFIG.paths.lenses, projectName.replace(/\//g, path.sep));
+  if (nestedLensOld !== lensOld && tryRenameContents(nestedLensOld, lensNew)) {
+    migrated.push(`lenses/${nestedLensOld} → lenses/${slug}`);
+  }
+
+  const sessionOld = path.join(CONFIG.paths.sessions, `${projectName}.jsonl`);
+  const sessionNew = path.join(CONFIG.paths.sessions, `${slug}.jsonl`);
+  if (tryRename(sessionOld, sessionNew)) migrated.push(`sessions/${projectName}.jsonl → sessions/${slug}.jsonl`);
+
+  const workingOld = path.join(CONFIG.paths.workingProjects, `${sanitizeProjectSlug(projectName.split("/").pop() || projectName)}.md`);
+  const workingNew = path.join(CONFIG.paths.workingProjects, `${slug}.md`);
+  if (tryRename(workingOld, workingNew)) migrated.push(`working/${path.basename(workingOld)} → ${slug}.md`);
+
+  const workingStateOld = path.join(CONFIG.paths.workingProjects, `${sanitizeProjectSlug(projectName.split("/").pop() || projectName)}.state.json`);
+  const workingStateNew = path.join(CONFIG.paths.workingProjects, `${slug}.state.json`);
+  if (tryRename(workingStateOld, workingStateNew)) migrated.push(`working/${path.basename(workingStateOld)} → ${slug}.state.json`);
+
+  return { migrated };
 }

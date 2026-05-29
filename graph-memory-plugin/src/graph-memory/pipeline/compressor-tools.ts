@@ -18,16 +18,14 @@ import { GlobalModel, GlobalModelFile } from "../mind/types.js";
 import { readModel, writeModel } from "../mind/model.js";
 import { readModel as readProjectModel, writeModel as writeProjectModel } from "../lenses/manager.js";
 import { ProjectModelFile } from "../lenses/types.js";
-import { readWhisper, writeWhisper, enforceWhisperCap, estimateTokens } from "../mind/whisper.js";
-import { readWhisper as readProjectWhisper, writeWhisper as writeProjectWhisper } from "../lenses/manager.js";
-import { markObservationsAbsorbed, pruneObservations, observationFileSize } from "../mind/observations.js";
-import { markObservationsAbsorbed as markProjectObservationsAbsorbed, pruneObservations as pruneProjectObservations } from "../lenses/manager.js";
+import { estimateTokens } from "../mind/whisper.js";
+import { markObservationsAbsorbed, pruneObservations, observationFileSize, countPendingObservations } from "../mind/observations.js";
+import { markObservationsAbsorbed as markProjectObservationsAbsorbed, pruneObservations as pruneProjectObservations, countPendingObservations as countProjectPendingObservations } from "../lenses/manager.js";
 import { pruneSessionLogs } from "../sessions/manager.js";
-import { removeFromIndex as removeFromV3Index } from "./graph-index-v3.js";
+import { removeFromIndex } from "./graph-index.js";
 
 export interface CompressorToolResult {
   modelsUpdated: string[];
-  whispersGenerated: string[];
   observationsAbsorbed: number;
   observationsPruned: number;
   sessionLogsPruned: number;
@@ -41,13 +39,6 @@ interface UpdateModelCall {
   layer: "global" | "project";
   project?: string;
   model_json: string;
-}
-
-interface GenerateWhisperCall {
-  tool: "generate_whisper";
-  layer: "global" | "project";
-  project?: string;
-  whisper_text: string;
 }
 
 interface ArchiveObservationsCall {
@@ -76,21 +67,19 @@ interface FlagDeepAuditCall {
 
 type CompressorToolCall =
   | UpdateModelCall
-  | GenerateWhisperCall
   | ArchiveObservationsCall
   | ArchiveGraphNodesCall
   | PruneSessionLogsCall
   | FlagDeepAuditCall;
 
 const VALID_TOOLS = new Set([
-  "update_model", "generate_whisper", "archive_observations",
+  "update_model", "archive_observations",
   "archive_graph_nodes", "prune_session_logs", "flag_for_deep_audit",
 ]);
 
 export function processCompressorOutputs(): CompressorToolResult {
   const result: CompressorToolResult = {
     modelsUpdated: [],
-    whispersGenerated: [],
     observationsAbsorbed: 0,
     observationsPruned: 0,
     sessionLogsPruned: 0,
@@ -99,7 +88,7 @@ export function processCompressorOutputs(): CompressorToolResult {
     errors: [],
   };
 
-  const obsDir = CONFIG.paths.v3PipelineObservations;
+  const obsDir = CONFIG.paths.pipelineObservations;
   if (!fs.existsSync(obsDir)) return result;
 
   const files = fs.readdirSync(obsDir)
@@ -120,10 +109,6 @@ export function processCompressorOutputs(): CompressorToolResult {
         case "update_model":
           processUpdateModel(call);
           result.modelsUpdated.push(call.layer === "project" ? (call.project || "unknown") : "global");
-          break;
-        case "generate_whisper":
-          processGenerateWhisper(call);
-          result.whispersGenerated.push(call.layer === "project" ? (call.project || "unknown") : "global");
           break;
         case "archive_observations":
           result.observationsAbsorbed += processArchiveObservations(call);
@@ -146,10 +131,9 @@ export function processCompressorOutputs(): CompressorToolResult {
     }
   }
 
-  if (result.modelsUpdated.length > 0 || result.whispersGenerated.length > 0) {
+  if (result.modelsUpdated.length > 0) {
     activityBus.log("system:info", "Compressor outputs processed", {
       modelsUpdated: result.modelsUpdated,
-      whispersGenerated: result.whispersGenerated,
       observationsAbsorbed: result.observationsAbsorbed,
       graphNodesArchived: result.graphNodesArchived,
     });
@@ -173,7 +157,7 @@ function processUpdateModel(call: UpdateModelCall): void {
           tokenEstimate: estimateTokens(JSON.stringify(modelData)),
         } as GlobalModel,
         lastCompressorRun: new Date().toISOString(),
-        observationCount: current.observationCount,
+        observationCount: countPendingObservations(),
       };
       writeModel(updated);
     } else if (call.project) {
@@ -188,26 +172,13 @@ function processUpdateModel(call: UpdateModelCall): void {
           tokenEstimate: estimateTokens(JSON.stringify(modelData)),
         },
         lastCompressorRun: new Date().toISOString(),
-        observationCount: current.observationCount,
+        observationCount: countProjectPendingObservations(call.project),
         lastSessionAt: new Date().toISOString(),
       };
       writeProjectModel(call.project, updated);
     }
   } catch (err: any) {
     activityBus.log("system:error", "Failed to update model: " + err.message);
-  }
-}
-
-function processGenerateWhisper(call: GenerateWhisperCall): void {
-  const text = call.whisper_text || "";
-
-  if (call.layer === "global") {
-    const capped = enforceWhisperCap(text);
-    writeWhisper(capped);
-  } else if (call.project) {
-    const projectCap = 500 * 4;
-    const capped = text.length > projectCap ? text.slice(0, projectCap) : text;
-    writeProjectWhisper(call.project, capped);
   }
 }
 
@@ -226,12 +197,12 @@ function processArchiveObservations(call: ArchiveObservationsCall): number {
 function processArchiveGraphNodes(call: ArchiveGraphNodesCall): number {
   if (!call.paths || call.paths.length === 0) return 0;
 
-  const archiveDir = CONFIG.paths.v3GraphArchive;
+  const archiveDir = CONFIG.paths.archive;
   if (!fs.existsSync(archiveDir)) fs.mkdirSync(archiveDir, { recursive: true });
 
   let archived = 0;
   for (const nodePath of call.paths) {
-    const srcDir = path.join(CONFIG.paths.v3Graph);
+    const srcDir = path.join(CONFIG.paths.nodes);
     const srcFile = findNodeFile(srcDir, nodePath);
     if (!srcFile) continue;
 
@@ -254,7 +225,7 @@ function processArchiveGraphNodes(call: ArchiveGraphNodesCall): number {
 
       fs.writeFileSync(destFile, updated);
       fs.unlinkSync(srcFile);
-      try { removeFromV3Index(nodePath); } catch { /* non-critical */ }
+      try { removeFromIndex(nodePath); } catch { /* non-critical */ }
       archived++;
     } catch (err: any) {
       activityBus.log("system:error", "Failed to archive node " + nodePath + ": " + err.message);
@@ -297,7 +268,7 @@ function processPruneSessionLogs(call: PruneSessionLogsCall): number {
     return pruneSessionLogs(call.project, days);
   }
 
-  const sessionsDir = CONFIG.paths.v3Sessions;
+  const sessionsDir = CONFIG.paths.sessions;
   if (!fs.existsSync(sessionsDir)) return 0;
 
   let total = 0;
@@ -309,7 +280,7 @@ function processPruneSessionLogs(call: PruneSessionLogsCall): number {
 }
 
 function processFlagDeepAudit(call: FlagDeepAuditCall): void {
-  const flagPath = path.join(CONFIG.paths.v3Graph, ".deep-audit-flag");
+  const flagPath = path.join(CONFIG.paths.nodes, ".deep-audit-flag");
   fs.writeFileSync(flagPath, JSON.stringify({
     reason: call.reason,
     flaggedAt: new Date().toISOString(),

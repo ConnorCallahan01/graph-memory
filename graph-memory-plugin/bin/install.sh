@@ -150,7 +150,7 @@ link_command() {
   echo "Installed command: $target_file"
 }
 
-for command_name in memory-onboard memory-status memory-search memory-morning-kickoff memory-connect-inputs memory-input-refresh memory-wire-project; do
+for command_name in memory-onboard memory-status memory-search memory-morning-kickoff memory-connect-inputs memory-input-refresh memory-wire-project memory-switch-harness notion-setup notion-sync notion-consolidate refresh-skill; do
   source_file="$PLUGIN_DIR/commands/$command_name.md"
   link_command "$source_file" "$COMMANDS_DIR/$command_name.md"
   link_command "$source_file" "$COMMANDS_DIR/$PLUGIN_NAME/$command_name.md"
@@ -168,5 +168,5 @@ node "$PLUGIN_DIR/dist/graph-memory/register-plugin-hooks.js" "$SETTINGS_FILE" "
 
 echo ""
 echo "Done! Restart Claude Code or run /mcp to reconnect."
-echo "Slash commands installed: /memory-onboard, /memory-status, /memory-search, /memory-morning-kickoff, /memory-connect-inputs, /memory-input-refresh, /memory-wire-project"
+echo "Slash commands installed: /memory-onboard, /memory-status, /memory-search, /memory-morning-kickoff, /memory-connect-inputs, /memory-input-refresh, /memory-wire-project, /memory-switch-harness, /notion-setup, /notion-sync, /notion-consolidate, /refresh-skill"
 echo "Compatibility aliases also installed: /graph-memory:memory-onboard, /graph-memory:memory-status, /graph-memory:memory-search, /graph-memory:memory-morning-kickoff, /graph-memory:memory-connect-inputs, /graph-memory:memory-input-refresh, /graph-memory:memory-wire-project"

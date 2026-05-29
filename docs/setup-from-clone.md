@@ -139,7 +139,19 @@ Useful Docker helper scripts:
 - `./bin/docker-doctor.sh`
 - `./bin/docker-stop.sh`
 
-## 6. Verify The Install
+## 6. Ngrok (Required for Notion Webhooks)
+
+If you plan to use Notion sync with webhooks, you need an ngrok tunnel forwarding to the daemon:
+
+```bash
+ngrok http 3100
+```
+
+Copy the public URL from the ngrok dashboard and set it as your Notion integration's webhook endpoint at `{ngrok-url}/notion-webhook`. Free-tier URLs rotate on restart — update Notion after each `ngrok` restart.
+
+Skip this step if you are not using Notion webhooks.
+
+## 7. Verify The Install
 
 Inside Claude Code:
 
@@ -163,7 +175,7 @@ graph_memory(action="remember", path="notes/first_run", gist="Initial install ve
 graph_memory(action="search", query="first run")
 ```
 
-## 7. Wire Memory Into Your Projects
+## 8. Wire Memory Into Your Projects
 
 After the plugin and onboarding are confirmed, wire graph-memory awareness into your project so the agent knows how to use memory:
 
@@ -177,7 +189,7 @@ For OpenCode, you can also manually copy `templates/OPENCODE-memory-section.md` 
 
 The command is idempotent — safe to re-run on a project that already has the section installed.
 
-## 8. Optional Dashboard
+## 9. Optional Dashboard
 
 The dashboard is not required for the plugin to work. It is a separate inspection UI for local development and debugging.
 
@@ -201,7 +213,7 @@ Default ports:
 - frontend: `http://localhost:5173`
 - API: `http://localhost:3001`
 
-## 9. Troubleshooting
+## 10. Troubleshooting
 
 ### Claude Code
 

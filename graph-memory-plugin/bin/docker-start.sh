@@ -15,6 +15,7 @@ GRAPH_MEMORY_HOST_TIMEZONE="${TZ:-$(systemsetup -gettimezone 2>/dev/null | awk -
 if [ -z "${GRAPH_MEMORY_HOST_TIMEZONE:-}" ]; then
   GRAPH_MEMORY_HOST_TIMEZONE="UTC"
 fi
+NOTION_DEFAULT_WORKSPACE_ID="24d726e6-b2f9-471c-aebb-544639a61393"
 
 if ! docker image inspect "$GRAPH_MEMORY_DOCKER_IMAGE" >/dev/null 2>&1; then
   "$DIR/bin/docker-build.sh"
@@ -31,6 +32,10 @@ docker run -d \
   -e GRAPH_MEMORY_ROOT="$GRAPH_MEMORY_CONTAINER_ROOT" \
   -e HOME="$GRAPH_MEMORY_CONTAINER_AUTH_PATH" \
   -e TZ="$GRAPH_MEMORY_HOST_TIMEZONE" \
+  -e NOTION_API_TOKEN="${NOTION_API_TOKEN:-$(security find-generic-password -s notion-cli -w 2>/dev/null || true)}" \
+  -e NOTION_WORKSPACE_ID="${NOTION_WORKSPACE_ID:-$(security find-generic-password -s notion-workspace-id -w 2>/dev/null || printf '%s' "$NOTION_DEFAULT_WORKSPACE_ID")}" \
+  -e NOTION_WEBHOOK_SECRET="${NOTION_WEBHOOK_SECRET:-}" \
+  -p 3100:3100 \
   -v "$GRAPH_MEMORY_HOST_ROOT:$GRAPH_MEMORY_CONTAINER_ROOT" \
   -v "$GRAPH_MEMORY_DOCKER_AUTH_VOLUME:$GRAPH_MEMORY_CONTAINER_AUTH_PATH" \
   "$GRAPH_MEMORY_DOCKER_IMAGE"

@@ -44,27 +44,49 @@ memory-dashboard/
     lib/api.ts            # Typed API client
     styles.css            # OKLCH design system
 
-~/.graph-memory/          # The actual graph data (outside this repo)
-  nodes/                  # Active knowledge nodes (v2)
-  graph/                  # v3 graph (nodes + .index.json)
-  mind/                   # v3 global mental model
-    model.json            # cognitive style, preferences, guardrails
-    whisper.txt           # pre-generated injection paragraph
-    observations.jsonl    # append-only observation feed
-  lenses/                 # v3 project models
-    {project}/            # model.json, whisper.txt, observations.jsonl
-  sessions/               # v3 session logs
+~/.graph-memory/                    # The actual graph data (outside this repo)
+  nodes/                            # Active knowledge nodes (canonical store, 22 category dirs)
+  mind/                             # Global mental model
+    model.json                      # cognitive style, preferences, guardrails
+    whisper.txt                     # pre-generated injection paragraph
+    observations.jsonl              # append-only observation feed
+  lenses/                           # Per-project models
+    {project}/                      # model.json, whisper.txt
+    _archived/                      # decommissioned project lenses
+  sessions/                         # Session logs
     {project}.jsonl
-  archive/                # Archived nodes
-  dreams/                 # pending/, integrated/, archived/
-  briefs/                 # Daily brief outputs
-  working/                # Per-project working state with key files
-  .deltas/                # Scribe output
-  .jobs/                  # Background queue state
-  .pipeline-logs/         # Worker logs
-  .skillforge/            # Generated skill manifests
-  .notion-sync-state.json # Notion workspace sync state
-  MAP.md, PRIORS.md, SOMA.md, WORKING.md, DREAMS.md  # v2 context files
+  archive/                          # Archived nodes + legacy docs
+    v3-graph-backup/                # Archived diverged v3 graph directory
+  dreams/                           # pending/, integrated/, archived/, projects/
+  briefs/                           # Daily brief outputs
+    daily/
+  working/                          # Per-project working state
+    global.md
+    projects/                       # {project}.md + {project}.state.json per active project
+      _updates/                     # incremental working state updates
+  graph/                            # Legacy graph directory (superseded by nodes/)
+  .sessions/                        # Per-session capture buffers (UUID + opencode_session dirs)
+  .session-context/                 # Session context snapshots (JSON)
+  .active-projects/                 # Active project session mappings
+  .buffer/                          # Raw hook capture buffer
+  .deltas/                          # Scribe output
+  .jobs/                            # Background queue state
+  .pipeline-logs/                   # Worker logs
+  .pipeline/                        # Pipeline intermediate state
+    observations/absorbed/          # Absorbed observation deltas
+  .logs/                            # Activity log + input-refresh logs
+  .inputs/                          # External brief inputs
+    gmail/, calendar/, slack/       # Per-source classified/normalized/
+    config.json
+  .skillforge/                      # Generated skill manifests
+  .notion-sync-state.json           # Notion workspace sync state
+  .notion-sync-input.json           # Notion sync input staging
+  .notion-sync-plan.json            # Notion sync execution plan
+  .notion-webhook-token             # Notion webhook token
+  config.yml                        # Graph memory runtime config
+  manifest.yml                      # Service manifest
+  MAP.md, WORKING.md, DREAMS.md    # Context files
+  PRIORS.md, SOMA.md               # Legacy context files (superseded by mental model)
 ```
 
 ## Build & Verify
@@ -97,7 +119,16 @@ Session-start uses a tiered strategy:
 - **If `GRAPH_MEMORY_V3=1` and whisper data exists** — compressed whispers (~1,100 tokens): global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150
 - **Otherwise (default)** — reads `mind/model.json` directly + MAP + WORKING + PINNED + DREAMS
 
-Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach.
+Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach. Whisper is injected as prefix before v2 context, not gated by `hasV3Data()`.
+
+### v2/v3 Hybrid Architecture
+
+The system runs a merged v2/v3 hybrid:
+
+- **v2 provides**: knowledge graph (nodes/), MAP, WORKING, DREAMS, pinned nodes, decay, context regeneration
+- **v3 provides**: mental models (mind/), whispers, observations, session logs, project lenses
+- **Single canonical node store**: `nodes/` — the diverged `graph/` directory has been archived to `archive/v3-graph-backup/`
+- Observer still runs but writes nodes to `nodes/` instead of `graph/`
 
 ### Mental Model Data
 
@@ -170,6 +201,9 @@ graph_memory(action="remember", path="patterns/new-pattern", gist="One-sentence 
 - **Git tracks changes** — every consolidation is recoverable
 - **Notion is human-readable mirror** — disk is agent-readable source of truth, Notion is a presentation layer
 - **Notion API v2026-03-11** — properties are managed via data sources, not databases
+- **Shared ambient recall** — `scoring.ts` holds STOPWORDS, patterns, category gates, full `ambientRecall()` — extensions use thin wrappers
+- **Webhook secret via env var** — `${NOTION_WEBHOOK_SECRET}` in config.yml, resolved at runtime
+- **Daemon crash resilience** — tick housekeeping wrapped in try/catch, per-file I/O guarded, unknown job types throw explicit errors
 
 <!-- BEGIN graph-memory plugin section -->
 ## Graph Memory

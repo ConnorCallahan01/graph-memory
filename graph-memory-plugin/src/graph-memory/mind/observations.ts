@@ -9,7 +9,7 @@ import { CONFIG } from "../config.js";
 import { Observation, ObservationType, ObservationLayer } from "./types.js";
 
 export function observationsPath(): string {
-  return path.join(CONFIG.paths.v3Mind, "observations.jsonl");
+  return path.join(CONFIG.paths.mind, "observations.jsonl");
 }
 
 export function appendObservation(obs: {
@@ -21,7 +21,7 @@ export function appendObservation(obs: {
   confidence: number;
   sessionId: string;
 }): Observation {
-  const dir = CONFIG.paths.v3Mind;
+  const dir = CONFIG.paths.mind;
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const entry: Observation = {
@@ -42,12 +42,29 @@ export function appendObservation(obs: {
   return entry;
 }
 
+export function countPendingObservations(): number {
+  const filePath = observationsPath();
+  if (!fs.existsSync(filePath)) return 0;
+
+  const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
+  let count = 0;
+  for (const line of lines) {
+    try {
+      if (!JSON.parse(line).absorbed) count++;
+    } catch { /* skip malformed */ }
+  }
+  return count;
+}
+
 export function readObservations(since?: string): Observation[] {
   const filePath = observationsPath();
   if (!fs.existsSync(filePath)) return [];
 
   const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
-  const all: Observation[] = lines.map((line) => JSON.parse(line));
+  const all: Observation[] = [];
+  for (const line of lines) {
+    try { all.push(JSON.parse(line)); } catch { /* skip malformed */ }
+  }
 
   if (!since) return all;
   return all.filter((o) => o.timestamp > since);
@@ -60,7 +77,8 @@ export function markObservationsAbsorbed(ids: string[]): void {
   const idSet = new Set(ids);
   const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
   const updated = lines.map((line) => {
-    const obs: Observation = JSON.parse(line);
+    let obs: Observation;
+    try { obs = JSON.parse(line); } catch { return line; }
     if (idSet.has(obs.id)) {
       obs.absorbed = true;
     }
@@ -80,7 +98,8 @@ export function pruneObservations(olderThanDays: number): number {
   let pruned = 0;
 
   for (const line of lines) {
-    const obs: Observation = JSON.parse(line);
+    let obs: Observation;
+    try { obs = JSON.parse(line); } catch { kept.push(line); continue; }
     if (obs.absorbed && obs.timestamp < cutoff) {
       pruned++;
     } else {

@@ -1,7 +1,7 @@
 import { CONFIG } from "../config.js";
 import { activityBus } from "../events.js";
 import { NotionSyncState, createEmptyNotionSyncState, readNotionSyncState, writeNotionSyncState } from "./notion-sync.js";
-import { checkNtn, createPage, createDatabase, configureDataSource, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA } from "./notion-cli.js";
+import { checkNtn, createPage, createDatabase, configureDataSource, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA, PROJECTS_DB_SCHEMA, PATTERNS_DB_SCHEMA, DREAMS_DB_SCHEMA } from "./notion-cli.js";
 
 function adjustForExistingTitle(props: Record<string, any>): Record<string, any> {
   const result: Record<string, any> = {};
@@ -101,11 +101,35 @@ export function setupNotionWorkspace(options: SetupNotionWorkspaceOptions = {}):
   state.databases.briefs = { id: briefsDb.id };
   createdPages.push("Daily Briefs");
 
+  const projectsDb = createDatabase(parentPageId, "Projects");
+  if (projectsDb.dataSourceId) {
+    configureDataSource(projectsDb.dataSourceId, adjustForExistingTitle(
+      buildDatabaseProperties(PROJECTS_DB_SCHEMA),
+    ));
+  }
+  state.databases.projects = { id: projectsDb.id };
+  createdPages.push("Projects");
+
+  const patternsDb = createDatabase(parentPageId, "Patterns & Insights");
+  if (patternsDb.dataSourceId) {
+    configureDataSource(patternsDb.dataSourceId, adjustForExistingTitle(
+      buildDatabaseProperties(PATTERNS_DB_SCHEMA),
+    ));
+  }
+  state.databases.patterns = { id: patternsDb.id };
+  createdPages.push("Patterns & Insights");
+
+  const dreamsDb = createDatabase(parentPageId, "Dreams & Experiments");
+  if (dreamsDb.dataSourceId) {
+    configureDataSource(dreamsDb.dataSourceId, adjustForExistingTitle(
+      buildDatabaseProperties(DREAMS_DB_SCHEMA),
+    ));
+  }
+  state.databases.dreams = { id: dreamsDb.id };
+  createdPages.push("Dreams & Experiments");
+
   const wikiPages = [
     { key: "how-i-think", title: "# How I Think" },
-    { key: "projects", title: "# Projects" },
-    { key: "patterns-insights", title: "# Patterns & Insights" },
-    { key: "dreams-experiments", title: "# Dreams & Experiments" },
     { key: "archive", title: "# Archive" },
   ];
 

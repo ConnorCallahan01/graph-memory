@@ -50,11 +50,11 @@ test("init creates v3 directory structure", () => {
 
     const requiredDirs = [
       "mind", "lenses", "lenses/_archived", "sessions",
-      "graph", "graph/.archive", ".pipeline/observations",
-      "graph/patterns", "graph/anti-patterns", "graph/decisions",
-      "graph/preferences", "graph/procedures", "graph/corrections",
-      "graph/projects", "graph/concepts", "graph/architecture",
-      "graph/people", "graph/tools",
+      "graph", "archive", ".pipeline/observations",
+      "nodes/patterns", "nodes/anti-patterns", "nodes/decisions",
+      "nodes/preferences", "nodes/procedures", "nodes/corrections",
+      "nodes/projects", "nodes/concepts", "nodes/architecture",
+      "nodes/people", "nodes/tools",
     ];
 
     for (const dir of requiredDirs) {
@@ -364,10 +364,10 @@ test("observer-tools: process observe, log_session, upsert_node outputs", async 
     assert.deepEqual(sessions[0].decisions, ["vitest over jest"]);
 
     // Verify graph nodes were written
-    const patternNode = fs.readFileSync(path.join(graphRoot, "graph", "patterns", "incremental-refactor.md"), "utf-8");
+    const patternNode = fs.readFileSync(path.join(graphRoot, "nodes", "patterns", "incremental-refactor.md"), "utf-8");
     assert.ok(patternNode.includes("incremental"), "Pattern node content exists");
 
-    const antiNode = fs.readFileSync(path.join(graphRoot, "graph", "anti-patterns", "never-use-eval.md"), "utf-8");
+    const antiNode = fs.readFileSync(path.join(graphRoot, "nodes", "anti-patterns", "never-use-eval.md"), "utf-8");
     assert.ok(antiNode.includes("anti_pattern: true"), "Anti-pattern has anti_pattern flag");
     assert.ok(antiNode.includes("decay_exempt: true"), "Anti-pattern is decay exempt");
     assert.ok(antiNode.includes("0.9"), "Anti-pattern has high confidence");
@@ -464,7 +464,7 @@ test("compressor-tools: archive graph nodes", async () => {
     await setupEnv(graphRoot);
 
     // Create a node to archive
-    const nodeDir = path.join(graphRoot, "graph", "patterns");
+    const nodeDir = path.join(graphRoot, "nodes", "patterns");
     fs.writeFileSync(path.join(nodeDir, "low-confidence.md"), [
       "---",
       "id: patterns/low-confidence",
@@ -495,7 +495,7 @@ test("compressor-tools: archive graph nodes", async () => {
     assert.equal(result.graphNodesArchived, 1, "1 node archived");
     assert.ok(!fs.existsSync(path.join(nodeDir, "low-confidence.md")), "Node removed from active");
 
-    const archived = fs.readFileSync(path.join(graphRoot, "graph", ".archive", "patterns", "low-confidence.md"), "utf-8");
+    const archived = fs.readFileSync(path.join(graphRoot, "archive", "patterns", "low-confidence.md"), "utf-8");
     assert.ok(archived.includes("archived_reason"), "Archived node has reason");
     assert.ok(archived.includes("confidence below 0.2"), "Archived node has reason text");
   } finally {
@@ -602,8 +602,8 @@ test("graph-index-v3: rebuild, lookup, search, category filter", async () => {
     initGraph(graphRoot);
     await setupEnv(graphRoot);
 
-    const patternsDir = path.join(graphRoot, "graph", "patterns");
-    const decisionsDir = path.join(graphRoot, "graph", "decisions");
+    const patternsDir = path.join(graphRoot, "nodes", "patterns");
+    const decisionsDir = path.join(graphRoot, "nodes", "decisions");
 
     fs.writeFileSync(path.join(patternsDir, "incremental-refactor.md"), matter.stringify(
       "# Incremental Refactor\n\nBreak refactors into small steps.",
@@ -901,7 +901,7 @@ test("phase 5: guardrails injected in session start", async () => {
     initGraph(graphRoot);
     await setupEnv(graphRoot);
 
-    const antiPatternsDir = path.join(graphRoot, "graph", "anti-patterns");
+    const antiPatternsDir = path.join(graphRoot, "nodes", "anti-patterns");
     fs.writeFileSync(
       path.join(antiPatternsDir, "no-console-log.md"),
       matter.stringify("# No Console Log\n\nNever use console.log in production.", {
@@ -951,7 +951,7 @@ test("phase 5: status action includes v3 anti-pattern counts", async () => {
     initGraph(graphRoot);
     await setupEnv(graphRoot);
 
-    const antiPatternsDir = path.join(graphRoot, "graph", "anti-patterns");
+    const antiPatternsDir = path.join(graphRoot, "nodes", "anti-patterns");
     fs.writeFileSync(
       path.join(antiPatternsDir, "ap1.md"),
       matter.stringify("# AP1\n\nRule 1.", {
@@ -1034,7 +1034,7 @@ test("phase 6: bootstrap project doc generates CLAUDE.md", async () => {
       lastSessionAt: new Date().toISOString(),
     });
 
-    const antiPatternsDir = path.join(graphRoot, "graph", "anti-patterns");
+    const antiPatternsDir = path.join(graphRoot, "nodes", "anti-patterns");
     fs.writeFileSync(
       path.join(antiPatternsDir, "no-any.md"),
       matter.stringify("# No Any\n\nNo any.", {

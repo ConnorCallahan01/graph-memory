@@ -4,7 +4,10 @@ import { CONFIG } from "../config.js";
 import { activityBus } from "../events.js";
 import { createJob, GraphMemoryJob, GraphMemoryJobPayload, GraphMemoryJobState, GraphMemoryJobType } from "./job-schema.js";
 
-const PRIORITY: Record<GraphMemoryJobType, number> = {
+export const PROJECT_CHAIN_TYPES = new Set<GraphMemoryJobType>(["auditor", "librarian", "dreamer"]);
+export const GLOBAL_CHAIN_TYPES = new Set<GraphMemoryJobType>(["observer", "compressor"]);
+
+export const PRIORITY: Record<GraphMemoryJobType, number> = {
   scribe: 0,
   observer: 0,
   compressor: 1,
@@ -16,8 +19,9 @@ const PRIORITY: Record<GraphMemoryJobType, number> = {
   skillforge_refresh: 5,
   memory_analysis: 6,
   bootstrap_project_doc: 3,
-  dreamer_v3: 4,
   notion_sync: 7,
+  notion_inbound_triage: 3,
+  notion_inbound_enrich: 4,
 };
 
 function stateDir(state: GraphMemoryJobState): string {
@@ -68,6 +72,7 @@ export function ensureJobDirectories(): void {
     CONFIG.paths.jobsDone,
     CONFIG.paths.jobsFailed,
     CONFIG.paths.skillforgeManifests,
+    CONFIG.paths.projectLocks,
   ]) {
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
@@ -92,6 +97,80 @@ export function countJobs(state: GraphMemoryJobState, type?: GraphMemoryJobType)
 
 export function hasActiveJob(type: GraphMemoryJobType): boolean {
   return countJobs("queued", type) > 0 || countJobs("running", type) > 0;
+}
+
+export function getJobProject(job: GraphMemoryJob): string | null {
+  const payload = (job.payload as unknown) as Record<string, unknown>;
+  const project = payload?.project;
+  if (typeof project === "string" && project.trim() && project !== "global") {
+    return project.trim();
+  }
+  return null;
+}
+
+export function hasActiveJobForProject(type: GraphMemoryJobType, project: string): boolean {
+  for (const state of ["queued", "running"] as const) {
+    for (const job of listJobs(state)) {
+      if (job.type !== type) continue;
+      if (getJobProject(job) === project) return true;
+    }
+  }
+  return false;
+}
+
+export function hasActiveProjectChainJob(project: string): boolean {
+  for (const state of ["queued", "running"] as const) {
+    for (const job of listJobs(state)) {
+      if (!PROJECT_CHAIN_TYPES.has(job.type)) continue;
+      if (getJobProject(job) === project) return true;
+    }
+  }
+  return false;
+}
+
+export function hasActiveGlobalChainJob(): boolean {
+  for (const state of ["queued", "running"] as const) {
+    for (const job of listJobs(state)) {
+      if (!GLOBAL_CHAIN_TYPES.has(job.type)) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+export function listJobsForProject(state: GraphMemoryJobState, project: string): GraphMemoryJob[] {
+  return listJobs(state).filter((job) => getJobProject(job) === project);
+}
+
+export function countDeltasForProject(project: string): number {
+  const deltasDir = CONFIG.paths.deltas;
+  if (!fs.existsSync(deltasDir)) return 0;
+
+  let count = 0;
+  for (const file of fs.readdirSync(deltasDir).filter((f) => f.endsWith(".json"))) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(deltasDir, file), "utf-8")) as {
+        scribes?: Array<{ deltas?: Array<{ project?: string }> }>;
+      };
+      const hasProject = (raw.scribes || []).some((s) =>
+        (s.deltas || []).some((d) => String(d.project || "").trim() === project)
+      );
+      if (hasProject) count++;
+    } catch { /* skip */ }
+  }
+  return count;
+}
+
+export function getActiveProjectChainProjects(): Set<string> {
+  const projects = new Set<string>();
+  for (const state of ["queued", "running"] as const) {
+    for (const job of listJobs(state)) {
+      if (!PROJECT_CHAIN_TYPES.has(job.type)) continue;
+      const project = getJobProject(job);
+      if (project) projects.add(project);
+    }
+  }
+  return projects;
 }
 
 export function findActiveJobByIdempotencyKey(idempotencyKey: string): GraphMemoryJob | null {
@@ -268,10 +347,20 @@ export function requeueStaleRunningJobs(maxAgeMs: number): number {
     const startedAt = job.startedAt ? Date.parse(job.startedAt) : Date.parse(job.updatedAt);
     if (Number.isNaN(startedAt)) continue;
     if (now - startedAt < maxAgeMs) continue;
+    if (job.workerPid && isProcessAlive(job.workerPid)) continue;
 
     requeueRunningJob(job, "Requeued stale running job after daemon restart");
     count += 1;
   }
 
   return count;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }

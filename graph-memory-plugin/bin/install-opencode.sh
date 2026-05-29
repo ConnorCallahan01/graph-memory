@@ -30,24 +30,29 @@ echo "Building..."
 # 3. Create directories if needed
 mkdir -p "$PLUGINS_DIR" "$COMMANDS_DIR"
 
-# 4. Symlink the OpenCode extension into the plugins directory
-SYMLINK="$PLUGINS_DIR/$PLUGIN_NAME.ts"
+# 4. Copy the OpenCode extension into the plugins directory.
+#    We copy (not symlink) because Bun/Node resolve bare-specifier imports
+#    like "zod" from the real path of the file.  A symlink pointing into
+#    another repo would fail to resolve dependencies installed in
+#    ~/.config/opencode/node_modules/.
+TARGET="$PLUGINS_DIR/$PLUGIN_NAME.ts"
 EXTENSION_SOURCE="$PLUGIN_DIR/extensions/graph-memory-opencode.ts"
 
-if [ -L "$SYMLINK" ]; then
-  EXISTING_TARGET="$(readlink "$SYMLINK")"
-  if [ "$EXISTING_TARGET" = "$EXTENSION_SOURCE" ]; then
-    echo "Plugin symlink already exists and points to correct location."
+if [ -L "$TARGET" ]; then
+  echo "Replacing existing symlink with copy..."
+  rm "$TARGET"
+fi
+
+if [ -e "$TARGET" ]; then
+  if cmp -s "$TARGET" "$EXTENSION_SOURCE"; then
+    echo "Plugin file is already up to date."
   else
-    echo "Updating symlink: $EXISTING_TARGET -> $EXTENSION_SOURCE"
-    ln -sfn "$EXTENSION_SOURCE" "$SYMLINK"
+    cp "$EXTENSION_SOURCE" "$TARGET"
+    echo "Updated plugin file: $TARGET"
   fi
-elif [ -e "$SYMLINK" ]; then
-  echo "Warning: $SYMLINK exists but is not a symlink. Skipping."
-  echo "Remove it manually and re-run this script."
 else
-  ln -s "$EXTENSION_SOURCE" "$SYMLINK"
-  echo "Created symlink: $SYMLINK -> $EXTENSION_SOURCE"
+  cp "$EXTENSION_SOURCE" "$TARGET"
+  echo "Installed plugin file: $TARGET"
 fi
 
 # 5. Symlink commands into ~/.config/opencode/commands/
@@ -112,7 +117,7 @@ node -e "
   const desired = {
     type: 'local',
     command: ['node', command],
-    enabled: false
+    enabled: true
   };
 
   const existing = config.mcp[name];
@@ -141,7 +146,8 @@ echo "  - Conversation capture: feeds the background scribe pipeline"
 echo ""
 echo "Commands installed:"
 echo "  /memory-onboard, /memory-status, /memory-search, /memory-morning-kickoff,"
-echo "  /memory-wire-project, /memory-connect-inputs, /memory-input-refresh"
+echo "  /memory-wire-project, /memory-connect-inputs, /memory-input-refresh,"
+echo "  /memory-switch-harness"
 echo ""
 echo "Optional: add memory instructions to your AGENTS.md by copying"
 echo "  templates/OPENCODE-memory-section.md into your project."

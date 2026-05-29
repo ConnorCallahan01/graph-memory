@@ -13,8 +13,6 @@ You will be given:
 - the session delta file path
 - the current project `WORKING.md` path
 - the current project working state JSON path
-- the assistant trace path (optional)
-- the tool trace path (optional)
 - the file interaction summary path (optional)
 - the required output JSON path
 
@@ -38,9 +36,11 @@ Produce concise arrays. Keep each bullet SHORT — under 15 words if possible.
 ## Sources
 
 1. The delta file (primary source for graph changes)
-2. The assistant trace (what was attempted)
-3. The tool trace (what actually happened)
+2. The current project `WORKING.md`
+3. The current project working state JSON
 4. The file interaction summary (mechanical file-touch counts — use to pick key files)
+
+Raw assistant and tool traces are intentionally not provided. Do not search for, glob, grep, or read raw trace/session/log files from `.sessions`, `.pipeline-logs`, or other graph-root directories. If a detail is not present in the curated sources above, omit it.
 
 ## Project Filtering
 

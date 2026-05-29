@@ -1,3 +1,5 @@
 node_modules/
 dist/
-.consolidation.log
+.consolidation_log
+.firecrawl/
+.notion-webhook-token

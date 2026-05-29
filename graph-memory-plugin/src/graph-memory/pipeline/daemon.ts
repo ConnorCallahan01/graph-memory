@@ -5,38 +5,48 @@ import { CONFIG, isGraphInitialized } from "../config.js";
 import { initializeGraph } from "../index.js";
 import { activityBus } from "../events.js";
 import { generatePreflightReport } from "./preflight.js";
-import { claimNextJob, completeRunningJob, countJobs, enqueueJob, ensureJobDirectories, failRunningJob, hasActiveJob, listJobs, requeueStaleRunningJobs, updateRunningJob } from "./job-queue.js";
-import { GraphMemoryJob } from "./job-schema.js";
-import { runPipelineWorker } from "./worker-runner.js";
+import { claimNextJob, completeRunningJob, countJobs, enqueueJob, ensureJobDirectories, failRunningJob, hasActiveJob, hasActiveJobForProject, hasActiveProjectChainJob, getActiveProjectChainProjects, countDeltasForProject, listJobs, requeueRunningJob, requeueStaleRunningJobs, updateRunningJob, PROJECT_CHAIN_TYPES, GLOBAL_CHAIN_TYPES, PRIORITY } from "./job-queue.js";
+import { GraphMemoryJob, GraphMemoryJobState, NotionInboundTriagePayload, NotionInboundEnrichPayload } from "./job-schema.js";
+import { runPipelineWorker, WorkerRunOptions } from "./worker-runner.js";
 import { loadRuntimeConfig } from "../runtime.js";
 import { regenerateCoreContextFiles, regenerateDreamContext } from "./graph-ops.js";
 import { runDecay } from "./decay.js";
 import { updateProjectWorkingFromSession, collectFileInteractions } from "../project-working.js";
-import { scoreCandidates, computeNodeContentHash } from "./skillforge-score.js";
-import { listManifests, findDriftedManifests } from "./skillforge-manifest.js";import { getAssistantTracePath, getToolTracePath } from "../session-trace.js";
+import { scoreCandidates, computeNodeContentHash, computeMultiNodeContentHash } from "./skillforge-score.js";
+import { listManifests, findDriftedManifests, manifestKeyForNodes } from "./skillforge-manifest.js";import { getAssistantTracePath, getToolTracePath } from "../session-trace.js";
 import { getDailyBriefPaths } from "../briefs.js";
 import { loadExternalInputsConfig, readRecentClassifiedInputs } from "../external-inputs.js";
-import { getProjectWorkingPath, getProjectWorkingStatePath, getProjectWorkingUpdatePath, getFileInteractionPath } from "../working-files.js";
+import { getProjectWorkingPath, getProjectWorkingStatePath, getProjectWorkingUpdatePath, getFileInteractionPath, getProjectAuditDir, getProjectPreflightPath, getProjectAuditReportPath, getProjectAuditBriefPath, getProjectDreamsDir, getProjectDreamSummaryPath, getProjectLockPath, getGlobalLockPath, ensureAuditDirectories, ensureDreamDirectories, ensureLockDirectories, sanitizeProjectSlug } from "../working-files.js";
 import { processObserverOutputs } from "./observer-tools.js";
-import { processCompressorOutputs } from "./compressor-tools.js";
-import { rebuildV3Index } from "./graph-index-v3.js";
+import { processCompressorOutputs, runAutoPrune } from "./compressor-tools.js";
+import { rebuildV3Index as rebuildGraphIndex } from "./graph-index.js";
 import { bootstrapProjectDoc, detectDocDrift } from "./bootstrap.js";
-import { buildDreamerV3Input, processDreamerV3Outputs } from "./dreamer-v3-tools.js";
-import { readNotionSyncState, writeNotionSyncState, buildNotionDiff, writeDiffReport, readSyncPlan, executeNotionSync } from "./notion-sync.js";
-import { detectInboundEdits, writeInboundInput, readInboundPlan, applyInboundDeltas, writeInboundDeltas, writeMergeInput, readMergeResult, InboundEdit } from "./notion-inbound.js";
+import { readNotionSyncState, writeNotionSyncState, buildNotionDiff, writeDiffReport, readSyncPlan, executeNotionSync, buildWorkspaceManifest, writeWorkspaceManifest, mergeStewardPlans, readStewardPlan, StewardPlan } from "./notion-sync.js";
+import { checkNtnReady, getPage } from "./notion-cli.js";
+import { detectInboundEdits, writeInboundInput, readInboundPlan, applyInboundDeltas, writeInboundDeltas, writeMergeInput, readMergeResult, detectNewComments, buildCommentDetections, detectNewNotionTasks, InboundEdit } from "./notion-inbound.js";
+import { startWebhookServer } from "./notion-webhook.js";
+import { addNotionPickupItem } from "../project-working.js";
+import { appendObservation } from "../mind/observations.js";
+import { appendObservation as appendProjectObservation, ensureLens } from "../lenses/manager.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const AGENTS_DIR = path.resolve(__dirname, "../../../agents");
-const LEGACY_MARKERS = [
-  CONFIG.paths.scribePending,
-  CONFIG.paths.consolidationPending,
-  CONFIG.paths.librarianPending,
-  CONFIG.paths.dreamerPending,
-];
-const CONSOLIDATION_LOCK_PATH = path.join(CONFIG.paths.graphRoot, ".consolidation.lock");
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveWorkerModel(): string | undefined {
+  try {
+    const runtime = loadRuntimeConfig();
+    return runtime.docker.workerModel || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function runWorker(opts: WorkerRunOptions): Promise<{ exitCode: number; logFile: string; pid: number | undefined }> {
+  return runPipelineWorker({ ...opts, model: opts.model || resolveWorkerModel() });
 }
 
 function acquireDaemonLock(): void {
@@ -76,19 +86,72 @@ function releaseDaemonLock(): void {
   } catch { /* ignore */ }
 }
 
-function clearLegacyMarkers(): void {
-  for (const marker of LEGACY_MARKERS) {
+function acquireProjectChainLock(project: string): void {
+  ensureLockDirectories();
+  const lockPath = getProjectLockPath(project);
+  if (fs.existsSync(lockPath)) {
     try {
-      if (fs.existsSync(marker)) fs.unlinkSync(marker);
-    } catch { /* ignore */ }
+      const lock = JSON.parse(fs.readFileSync(lockPath, "utf-8"));
+      const ageMs = Date.now() - (lock.startedAtMs || 0);
+      if (ageMs < 30 * 60 * 1000) {
+        throw new Error(`Project chain lock held for ${project}`);
+      }
+      fs.unlinkSync(lockPath);
+    } catch (err) {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+      }
+      if (err instanceof Error && err.message.startsWith("Project chain lock held")) {
+        throw err;
+      }
+    }
   }
+  fs.writeFileSync(lockPath, JSON.stringify({
+    project,
+    pid: process.pid,
+    startedAtMs: Date.now(),
+    startedAt: new Date().toISOString(),
+  }, null, 2));
 }
 
-function clearConsolidationLock(): void {
+function releaseProjectChainLock(project: string): void {
   try {
-    if (fs.existsSync(CONSOLIDATION_LOCK_PATH)) {
-      fs.unlinkSync(CONSOLIDATION_LOCK_PATH);
+    const lockPath = getProjectLockPath(project);
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
+  } catch { /* ignore */ }
+}
+
+function acquireGlobalChainLock(): void {
+  ensureLockDirectories();
+  const lockPath = getGlobalLockPath();
+  if (fs.existsSync(lockPath)) {
+    try {
+      const lock = JSON.parse(fs.readFileSync(lockPath, "utf-8"));
+      const ageMs = Date.now() - (lock.startedAtMs || 0);
+      if (ageMs < 30 * 60 * 1000) {
+        throw new Error("Global chain lock held");
+      }
+      fs.unlinkSync(lockPath);
+    } catch (err) {
+      if (fs.existsSync(lockPath)) {
+        fs.unlinkSync(lockPath);
+      }
+      if (err instanceof Error && err.message === "Global chain lock held") {
+        throw err;
+      }
     }
+  }
+  fs.writeFileSync(lockPath, JSON.stringify({
+    pid: process.pid,
+    startedAtMs: Date.now(),
+    startedAt: new Date().toISOString(),
+  }, null, 2));
+}
+
+function releaseGlobalChainLock(): void {
+  try {
+    const lockPath = getGlobalLockPath();
+    if (fs.existsSync(lockPath)) fs.unlinkSync(lockPath);
   } catch { /* ignore */ }
 }
 
@@ -139,6 +202,55 @@ function maybeEnqueueAuditorFromScribeBacklog(reasonPrefix = "successful scribe 
     payload: { reason: count + " " + reasonPrefix },
     triggerSource: "daemon:scribe-threshold",
     idempotencyKey: "auditor:scribe-runs:" + latestCompletedAt,
+  });
+}
+
+function countCompletedScribesSinceLastAuditorForProject(project: string): { count: number; latestCompletedAt: string | null } {
+  const completedAuditors = listJobs("done")
+    .filter((job) => job.type === "auditor")
+    .filter((job) => {
+      const payload = (job.payload as unknown) as Record<string, unknown>;
+      return payload?.project === project;
+    })
+    .map((job) => job.completedAt || job.updatedAt || job.createdAt)
+    .filter((value): value is string => Boolean(value))
+    .sort((a, b) => Date.parse(b) - Date.parse(a));
+
+  const lastAuditorAtMs = completedAuditors[0] ? Date.parse(completedAuditors[0]) : 0;
+  let count = 0;
+  let latestCompletedAt: string | null = null;
+
+  for (const job of listJobs("done")) {
+    if (job.type !== "scribe") continue;
+    const payload = (job.payload as unknown) as Record<string, unknown>;
+    if (payload?.project !== project) continue;
+    const completedAt = job.completedAt || job.updatedAt || job.createdAt;
+    const completedAtMs = Date.parse(completedAt);
+    if (Number.isNaN(completedAtMs) || completedAtMs <= lastAuditorAtMs) continue;
+    count += 1;
+    if (!latestCompletedAt || completedAtMs > Date.parse(latestCompletedAt)) {
+      latestCompletedAt = completedAt;
+    }
+  }
+
+  return { count, latestCompletedAt };
+}
+
+function maybeEnqueueAuditorForProject(project: string, reasonPrefix = "successful scribe runs accumulated"): void {
+  if (!project || project === "global") return;
+  if (hasActiveJobForProject("auditor", project)) return;
+
+  const deltaCount = countDeltasForProject(project);
+  if (deltaCount === 0) return;
+
+  const { count, latestCompletedAt } = countCompletedScribesSinceLastAuditorForProject(project);
+  if (count < CONFIG.session.auditScribeFileThreshold || !latestCompletedAt) return;
+
+  enqueueJob({
+    type: "auditor",
+    payload: { reason: count + " " + reasonPrefix, project },
+    triggerSource: "daemon:project-scribe-threshold",
+    idempotencyKey: "auditor:" + project + ":scribe-runs:" + latestCompletedAt,
   });
 }
 
@@ -241,7 +353,7 @@ function maybeEnqueueObserverFromScribeBacklog(): void {
   enqueueJob({
     type: "observer",
     payload: {
-      deltaFiles,
+      deltaFiles: [...new Set(deltaFiles)],
       reason: count + " scribe runs since last observer",
     },
     triggerSource: "daemon:scribe-threshold",
@@ -255,7 +367,7 @@ function maybeEnqueueBootstrapFromObserver(project: string | undefined, sessionI
 
   let totalObs = 0;
 
-  const projectObsPath = path.join(CONFIG.paths.v3Lenses, project, "observations.jsonl");
+  const projectObsPath = path.join(CONFIG.paths.lenses, sanitizeProjectSlug(project), "observations.jsonl");
   if (fs.existsSync(projectObsPath)) {
     const lines = fs.readFileSync(projectObsPath, "utf-8").trim().split("\n").filter(Boolean);
     totalObs += lines.filter((l) => {
@@ -263,7 +375,7 @@ function maybeEnqueueBootstrapFromObserver(project: string | undefined, sessionI
     }).length;
   }
 
-  const globalObsPath = path.join(CONFIG.paths.v3Mind, "observations.jsonl");
+  const globalObsPath = path.join(CONFIG.paths.mind, "observations.jsonl");
   if (fs.existsSync(globalObsPath)) {
     const lines = fs.readFileSync(globalObsPath, "utf-8").trim().split("\n").filter(Boolean);
     totalObs += lines.filter((l) => {
@@ -372,6 +484,7 @@ function writeDaemonState(status: Record<string, unknown>): void {
 }
 
 function toWorkerPath(filePath: string): string {
+  if (!filePath) return filePath;
   const runtime = loadRuntimeConfig();
   if (runtime.mode !== "docker" || process.env.GRAPH_MEMORY_ROOT !== runtime.docker.graphRootInContainer) {
     return filePath;
@@ -414,7 +527,7 @@ function matchesIsoDateInTimeZone(dateValue: string | number | Date, targetDate:
   return getDatePartsInTimeZone(timeZone, value).date === targetDate;
 }
 
-function collectRecentActivityForDate(targetDate: string, timeZone: string, maxLines = 120): Array<Record<string, unknown>> {
+function collectRecentActivityForDate(targetDate: string, timeZone: string, maxLines = 40): Array<Record<string, unknown>> {
   const activityPath = CONFIG.paths.logs ? path.join(CONFIG.paths.logs, "activity.jsonl") : "";
   if (!activityPath || !fs.existsSync(activityPath)) return [];
 
@@ -439,7 +552,7 @@ function collectJobSummaryForDate(targetDate: string, timeZone: string): Array<R
   const jobs = [...listJobs("done"), ...listJobs("failed"), ...listJobs("running")];
   return jobs
     .filter((job) => matchesIsoDateInTimeZone(job.updatedAt || job.createdAt, targetDate, timeZone))
-    .slice(-80)
+    .slice(-40)
     .map((job) => ({
       id: job.id,
       type: job.type,
@@ -449,17 +562,16 @@ function collectJobSummaryForDate(targetDate: string, timeZone: string): Array<R
       startedAt: job.startedAt,
       completedAt: job.completedAt,
       triggerSource: job.triggerSource,
-      lastError: job.lastError || null,
-      payload: job.payload,
+      lastError: job.lastError ? String(job.lastError).slice(0, 200) : null,
     }));
 }
 
 function collectSessionTracePathsForDate(targetDate: string, timeZone: string, maxPaths = 30): string[] {
-  if (!fs.existsSync(CONFIG.paths.sessions)) return [];
+  if (!fs.existsSync(CONFIG.paths.sessionTraces)) return [];
 
   const paths: Array<{ filePath: string; mtimeMs: number }> = [];
-  for (const sessionDir of fs.readdirSync(CONFIG.paths.sessions)) {
-    const filePath = path.join(CONFIG.paths.sessions, sessionDir, "tool-trace.jsonl");
+  for (const sessionDir of fs.readdirSync(CONFIG.paths.sessionTraces)) {
+    const filePath = path.join(CONFIG.paths.sessionTraces, sessionDir, "tool-trace.jsonl");
     if (!fs.existsSync(filePath)) continue;
     const stat = fs.statSync(filePath);
     if (matchesIsoDateInTimeZone(stat.mtimeMs, targetDate, timeZone)) {
@@ -474,11 +586,11 @@ function collectSessionTracePathsForDate(targetDate: string, timeZone: string, m
 }
 
 function collectAssistantTracePathsForDate(targetDate: string, timeZone: string, maxPaths = 30): string[] {
-  if (!fs.existsSync(CONFIG.paths.sessions)) return [];
+  if (!fs.existsSync(CONFIG.paths.sessionTraces)) return [];
 
   const paths: Array<{ filePath: string; mtimeMs: number }> = [];
-  for (const sessionDir of fs.readdirSync(CONFIG.paths.sessions)) {
-    const filePath = path.join(CONFIG.paths.sessions, sessionDir, "assistant-trace.jsonl");
+  for (const sessionDir of fs.readdirSync(CONFIG.paths.sessionTraces)) {
+    const filePath = path.join(CONFIG.paths.sessionTraces, sessionDir, "assistant-trace.jsonl");
     if (!fs.existsSync(filePath)) continue;
     const stat = fs.statSync(filePath);
     if (matchesIsoDateInTimeZone(stat.mtimeMs, targetDate, timeZone)) {
@@ -532,9 +644,9 @@ function collectActiveProjectsForDate(targetDate: string, timeZone: string): Arr
   const byProject = new Map<string, { project: string; cwd?: string; sessionIds: Set<string> }>();
   const knownProjectRoots = new Map<string, string>();
 
-  if (fs.existsSync(CONFIG.paths.sessions)) {
-    for (const sessionDir of fs.readdirSync(CONFIG.paths.sessions)) {
-      const filePath = path.join(CONFIG.paths.sessions, sessionDir, "tool-trace.jsonl");
+  if (fs.existsSync(CONFIG.paths.sessionTraces)) {
+    for (const sessionDir of fs.readdirSync(CONFIG.paths.sessionTraces)) {
+      const filePath = path.join(CONFIG.paths.sessionTraces, sessionDir, "tool-trace.jsonl");
       if (!fs.existsSync(filePath)) continue;
       const events = readJsonLines(filePath);
       for (const event of events) {
@@ -628,18 +740,30 @@ function createMemoryAnalysisInput(briefDate: string, timeZone: string): string 
     },
     skillforge: {
       manifests: listManifests().map((m) => ({
-        source_node: m.source_node,
+        source_nodes: m.source_nodes,
         skill_name: m.skill_name,
         generated_at: m.generated_at,
         score: m.score,
         project: m.project,
+        candidate_type: m.candidate_type,
         refresh_count: m.refresh_count,
         last_refreshed_at: m.last_refreshed_at,
       })),
     },
   };
 
-  fs.writeFileSync(inputPath, JSON.stringify(payload, null, 2));
+  let json = JSON.stringify(payload, null, 2);
+  const MAX_INPUT_BYTES = 60_000;
+  if (json.length > MAX_INPUT_BYTES) {
+    if (payload.activity_events && Array.isArray(payload.activity_events)) {
+      payload.activity_events = payload.activity_events.slice(-20);
+    }
+    if (payload.jobs && Array.isArray(payload.jobs)) {
+      payload.jobs = payload.jobs.slice(-20);
+    }
+    json = JSON.stringify(payload, null, 2);
+  }
+  fs.writeFileSync(inputPath, json);
   return inputPath;
 }
 
@@ -681,21 +805,22 @@ function maybeEnqueueNotionSync(): void {
   const { date, hour } = getDatePartsInTimeZone(timeZone);
   if (hour < CONFIG.notionSync.syncHourLocal) return;
 
-  const briefPaths = getDailyBriefPaths(date);
-  if (!fs.existsSync(briefPaths.jsonPath) && !fs.existsSync(briefPaths.markdownPath)) return;
-
   if (hasActiveJob("notion_sync") || hasActiveJob("memory_analysis")) return;
 
   if (notionState.lastSyncAt) {
     const elapsed = Date.now() - new Date(notionState.lastSyncAt).getTime();
-    if (elapsed < 20 * 60 * 60 * 1000) return;
+    if (elapsed < 8 * 60 * 60 * 1000) return;
   }
+
+  const briefPaths = getDailyBriefPaths(date);
+  const briefAvailable = fs.existsSync(briefPaths.jsonPath) || fs.existsSync(briefPaths.markdownPath);
 
   enqueueJob({
     type: "notion_sync",
     payload: {
       reason: `daily notion sync for ${date}`,
       date,
+      briefAvailable,
     },
     triggerSource: "daemon:daily-notion-sync-schedule",
     idempotencyKey: `notion-sync:${date}`,
@@ -710,6 +835,9 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
     assistantTracePath?: string;
     toolTracePath?: string;
   };
+  if (!payload.snapshotPath || !payload.sessionId) {
+    throw new Error(`Scribe job missing required payload fields (snapshotPath, sessionId)`);
+  }
   const scribePromptPath = path.join(AGENTS_DIR, "memory-scribe.md");
   const deltaCountBefore = countActiveDeltaFiles();
   const deltaStateBefore = getSessionDeltaState(payload.sessionId);
@@ -729,13 +857,13 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
     : "";
   const prompt = `Read the scribe instructions at ${scribePromptPath}, then follow them. Snapshot file: ${snapshotPathForWorker}, session ID: ${payload.sessionId}, graph root: ${CONFIG.paths.graphRoot}.${projectCtx}${assistantTraceCtx}${toolTraceCtx} Read the snapshot, read MAP.md, then read only the 2-5 existing nodes most relevant to the conversation for context. Extract deltas, write to .deltas/ directory, then delete the snapshot file when complete.`;
 
-  const result = await runPipelineWorker({
+  const result = await runWorker({
     name: `scribe-${job.id}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 5 * 60_000,
+    timeoutMs: 10 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -766,6 +894,12 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
     return;
   }
 
+  try {
+    regenerateCoreContextFiles(payload.project);
+  } catch (err: any) {
+    activityBus.log("system:error", `WORKING regeneration after scribe failed: ${err.message}`);
+  }
+
   if (payload.project && payload.project !== "global") {
     enqueueJob({
       type: "working_update",
@@ -781,7 +915,11 @@ async function runScribe(job: GraphMemoryJob): Promise<void> {
     });
   }
 
-  maybeEnqueueAuditorFromScribeBacklog("successful scribe runs accumulated");
+  if (payload.project && payload.project !== "global") {
+    maybeEnqueueAuditorForProject(payload.project, "successful scribe run");
+  } else {
+    maybeEnqueueAuditorFromScribeBacklog("successful scribe runs accumulated");
+  }
 }
 
 async function runObserver(job: GraphMemoryJob): Promise<void> {
@@ -796,7 +934,7 @@ async function runObserver(job: GraphMemoryJob): Promise<void> {
   };
 
   const observerPromptPath = path.join(AGENTS_DIR, "memory-observer.md");
-  const obsDir = CONFIG.paths.v3PipelineObservations;
+  const obsDir = CONFIG.paths.pipelineObservations;
   if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
   const obsDirForWorker = toWorkerPath(obsDir);
 
@@ -813,7 +951,7 @@ async function runObserver(job: GraphMemoryJob): Promise<void> {
     return;
   }
 
-  const result = await runPipelineWorker({
+  const result = await runWorker({
     name: "observer-" + job.id,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
@@ -878,10 +1016,10 @@ async function runCompressor(job: GraphMemoryJob): Promise<void> {
   }
   prompt += " Reason: " + payload.reason;
 
-  const obsDir = CONFIG.paths.v3PipelineObservations;
+  const obsDir = CONFIG.paths.pipelineObservations;
   if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
 
-  const result = await runPipelineWorker({
+  const result = await runWorker({
     name: "compressor-" + job.id,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
@@ -900,26 +1038,17 @@ async function runCompressor(job: GraphMemoryJob): Promise<void> {
 
   const toolResult = processCompressorOutputs();
 
-  try { rebuildV3Index(); } catch { /* non-critical */ }
+  try { runAutoPrune(); } catch { /* non-critical */ }
+  try { rebuildGraphIndex(); } catch { /* non-critical */ }
 
   activityBus.log("system:info", "Compressor run complete", {
     jobId: job.id,
     reason: payload.reason,
     modelsUpdated: toolResult.modelsUpdated,
-    whispersGenerated: toolResult.whispersGenerated,
     observationsAbsorbed: toolResult.observationsAbsorbed,
     graphNodesArchived: toolResult.graphNodesArchived,
     errors: toolResult.errors.length,
   });
-
-  if (!hasActiveJob("dreamer_v3") && !hasActiveJob("dreamer")) {
-    enqueueJob({
-      type: "dreamer_v3",
-      payload: { reason: "compressor completed" },
-      triggerSource: "daemon:compressor-complete",
-      idempotencyKey: "dreamer-v3:" + Date.now(),
-    });
-  }
 }
 
 async function runWorkingUpdate(job: GraphMemoryJob): Promise<void> {
@@ -947,32 +1076,47 @@ async function runWorkingUpdate(job: GraphMemoryJob): Promise<void> {
   const workingPathForWorker = toWorkerPath(workingPath);
   const workingStatePathForWorker = toWorkerPath(workingStatePath);
   const updateOutputPathForWorker = toWorkerPath(updateOutputPath);
-  const assistantTracePathForWorker = payload.assistantTracePath ? toWorkerPath(payload.assistantTracePath) : null;
-  const toolTracePathForWorker = payload.toolTracePath ? toWorkerPath(payload.toolTracePath) : null;
-
   const fileInteractionData = collectFileInteractions(payload.toolTracePath);
   const fileInteractionPath = getFileInteractionPath(payload.project, payload.sessionId);
   fs.mkdirSync(path.dirname(fileInteractionPath), { recursive: true });
   fs.writeFileSync(fileInteractionPath, JSON.stringify(fileInteractionData, null, 2));
   const fileInteractionPathForWorker = fileInteractionData.length > 0 ? toWorkerPath(fileInteractionPath) : null;
+  const outputMtimeBeforeWorker = fs.existsSync(updateOutputPath)
+    ? fs.statSync(updateOutputPath).mtimeMs
+    : 0;
 
-  const prompt = `Read the working updater instructions at ${updaterPathForWorker}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Project: ${payload.project}. Session ID: ${payload.sessionId}. Delta file: ${deltaPathForWorker}. Project WORKING markdown: ${workingPathForWorker}. Project WORKING state JSON: ${workingStatePathForWorker}.${assistantTracePathForWorker ? ` Assistant trace: ${assistantTracePathForWorker}.` : ""}${toolTracePathForWorker ? ` Tool trace: ${toolTracePathForWorker}.` : ""}${fileInteractionPathForWorker ? ` File interaction summary: ${fileInteractionPathForWorker}.` : ""} Write the session working update artifact JSON to ${updateOutputPathForWorker}.`;
+  const prompt = `Read the working updater instructions at ${updaterPathForWorker}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Project: ${payload.project}. Session ID: ${payload.sessionId}. Delta file: ${deltaPathForWorker}. Project WORKING markdown: ${workingPathForWorker}. Project WORKING state JSON: ${workingStatePathForWorker}.${fileInteractionPathForWorker ? ` File interaction summary: ${fileInteractionPathForWorker}.` : ""} Raw assistant and tool traces are intentionally not provided; do not search for or read trace files. Write the session working update artifact JSON to ${updateOutputPathForWorker}.`;
 
-  const result = await runPipelineWorker({
-    name: `working-update-${job.id}`,
-    prompt,
-    graphRoot: CONFIG.paths.graphRoot,
-    logDir: CONFIG.paths.pipelineLogs,
-    addDirs: [AGENTS_DIR],
-    timeoutMs: 5 * 60_000,
-  });
+  try {
+    const result = await runWorker({
+      name: `working-update-${job.id}`,
+      prompt,
+      graphRoot: CONFIG.paths.graphRoot,
+      logDir: CONFIG.paths.pipelineLogs,
+      addDirs: [AGENTS_DIR],
+      timeoutMs: 5 * 60_000,
+    });
 
-  job.logFile = result.logFile;
-  job.workerPid = result.pid;
-  updateRunningJob(job);
+    job.logFile = result.logFile;
+    job.workerPid = result.pid;
+    updateRunningJob(job);
 
-  if (result.exitCode !== 0) {
-    throw new Error(`Working updater exited with code ${result.exitCode}. See ${result.logFile}`);
+    if (result.exitCode !== 0) {
+      throw new Error(`Working updater exited with code ${result.exitCode}. See ${result.logFile}`);
+    }
+  } catch (err: any) {
+    const outputMtimeAfterWorker = fs.existsSync(updateOutputPath)
+      ? fs.statSync(updateOutputPath).mtimeMs
+      : 0;
+    if (outputMtimeAfterWorker <= outputMtimeBeforeWorker) {
+      throw err;
+    }
+    activityBus.log("system:info", "Working updater failed after writing artifact; applying fresh artifact", {
+      jobId: job.id,
+      project: payload.project,
+      sessionId: payload.sessionId,
+      error: err.message,
+    });
   }
 
   if (!fs.existsSync(updateOutputPath)) {
@@ -989,56 +1133,68 @@ async function runWorkingUpdate(job: GraphMemoryJob): Promise<void> {
 }
 
 async function runAuditor(job: GraphMemoryJob): Promise<void> {
-  if (countActiveDeltaFiles() === 0) {
-    activityBus.log("system:info", "Skipping auditor job with no active deltas", { jobId: job.id });
-    return;
+  const payload = (job.payload as unknown) as { reason: string; project?: string };
+  const project = payload.project;
+
+  if (project && project !== "global") {
+    const deltaCount = countDeltasForProject(project);
+    if (deltaCount === 0) {
+      activityBus.log("system:info", "Skipping auditor job with no project deltas", {
+        jobId: job.id,
+        project,
+      });
+      return;
+    }
+  } else {
+    if (countActiveDeltaFiles() === 0) {
+      activityBus.log("system:info", "Skipping auditor job with no active deltas", { jobId: job.id });
+      return;
+    }
   }
 
-  clearConsolidationLock();
-  generatePreflightReport();
+  if (project && project !== "global") {
+    try {
+      acquireProjectChainLock(project);
+    } catch (err: any) {
+      if (err.message?.startsWith("Project chain lock held")) {
+        activityBus.log("system:info", "Skipping auditor job because project chain lock is held", {
+          jobId: job.id,
+          project,
+        });
+        return;
+      }
+      throw err;
+    }
+  }
+  generatePreflightReport(project);
 
   const auditorPath = path.join(AGENTS_DIR, "memory-auditor.md");
   const graphOpsPath = path.resolve(__dirname, "graph-ops.js");
-  const prompt = `Read the auditor instructions at ${auditorPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Read the preflight report at ${CONFIG.paths.preflightReport} first — it contains the full node manifest and flagged issues with their file contents included. IMPORTANT: when rebuilding context files, use this absolute path for graph-ops: ${graphOpsPath}`;
-  const result = await runPipelineWorker({
+
+  let preflightReportPath: string;
+  let auditReportPath: string;
+  let auditBriefPath: string;
+  let projectCtx: string;
+
+  if (project && project !== "global") {
+    ensureAuditDirectories(project);
+    preflightReportPath = toWorkerPath(getProjectPreflightPath(project));
+    auditReportPath = getProjectAuditReportPath(project);
+    auditBriefPath = getProjectAuditBriefPath(project);
+    projectCtx = ` Project: ${project}. Only process deltas and nodes relevant to this project.`;
+  } else {
+    preflightReportPath = toWorkerPath(CONFIG.paths.preflightReport);
+    auditReportPath = CONFIG.paths.auditReport;
+    auditBriefPath = CONFIG.paths.auditBrief;
+    projectCtx = "";
+  }
+
+  const auditReportPathForWorker = toWorkerPath(auditReportPath);
+  const auditBriefPathForWorker = toWorkerPath(auditBriefPath);
+
+  const prompt = `Read the auditor instructions at ${auditorPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}.${projectCtx} Read the preflight report at ${preflightReportPath} first — it contains the full node manifest and flagged issues with their file contents included. Write the audit report to ${auditReportPathForWorker} and the audit brief to ${auditBriefPathForWorker}. IMPORTANT: when rebuilding context files, use this absolute path for graph-ops: ${graphOpsPath}`;
+  const result = await runWorker({
     name: `auditor-${job.id}`,
-    prompt,
-    graphRoot: CONFIG.paths.graphRoot,
-    logDir: CONFIG.paths.pipelineLogs,
-    addDirs: [AGENTS_DIR],
-    timeoutMs: 12 * 60_000,
-  });
-
-  job.logFile = result.logFile;
-  job.workerPid = result.pid;
-  updateRunningJob(job);
-
-  if (result.exitCode !== 0) {
-    throw new Error(`Auditor worker exited with code ${result.exitCode}. See ${result.logFile}`);
-  }
-
-  if (!fs.existsSync(CONFIG.paths.auditReport) || !fs.existsSync(CONFIG.paths.auditBrief)) {
-    throw new Error("Auditor completed without writing audit artifacts");
-  }
-
-  clearLegacyMarkers();
-  if (!hasActiveJob("librarian")) {
-    enqueueJob({
-      type: "librarian",
-      payload: { reason: "auditor completed" },
-      triggerSource: "daemon:auditor-complete",
-      idempotencyKey: `librarian:${fs.statSync(CONFIG.paths.auditReport).mtimeMs}`,
-    });
-  }
-}
-
-async function runLibrarian(job: GraphMemoryJob): Promise<void> {
-  clearConsolidationLock();
-  const librarianPath = path.join(AGENTS_DIR, "memory-librarian.md");
-  const graphOpsPath = path.resolve(__dirname, "graph-ops.js");
-  const prompt = `Read the librarian instructions at ${librarianPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Read the audit brief at ${CONFIG.paths.auditBrief} and audit report at ${CONFIG.paths.auditReport} first — the auditor has already triaged mechanical fixes and prepared recommendations for you. IMPORTANT: when rebuilding context files, use this absolute path for graph-ops: ${graphOpsPath}`;
-  const result = await runPipelineWorker({
-    name: `librarian-${job.id}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
@@ -1051,34 +1207,101 @@ async function runLibrarian(job: GraphMemoryJob): Promise<void> {
   updateRunningJob(job);
 
   if (result.exitCode !== 0) {
+    if (project && project !== "global") releaseProjectChainLock(project);
+    throw new Error(`Auditor worker exited with code ${result.exitCode}. See ${result.logFile}`);
+  }
+
+  if (!fs.existsSync(auditReportPath) || !fs.existsSync(auditBriefPath)) {
+    if (project && project !== "global") releaseProjectChainLock(project);
+    throw new Error("Auditor completed without writing audit artifacts");
+  }
+
+  if (!hasActiveJobForProject("librarian", project || "global")) {
+    enqueueJob({
+      type: "librarian",
+      payload: { reason: "auditor completed", project },
+      triggerSource: "daemon:auditor-complete",
+      idempotencyKey: `librarian:${project || "global"}:${fs.statSync(auditReportPath).mtimeMs}`,
+    });
+  }
+}
+
+async function runLibrarian(job: GraphMemoryJob): Promise<void> {
+  const payload = (job.payload as unknown) as { reason: string; project?: string };
+  const project = payload.project;
+
+  let auditBriefPath: string;
+  let auditReportPath: string;
+  let projectCtx: string;
+
+  if (project && project !== "global") {
+    auditBriefPath = getProjectAuditBriefPath(project);
+    auditReportPath = getProjectAuditReportPath(project);
+    projectCtx = ` Project: ${project}. Only apply changes relevant to this project.`;
+  } else {
+    auditBriefPath = CONFIG.paths.auditBrief;
+    auditReportPath = CONFIG.paths.auditReport;
+    projectCtx = "";
+  }
+
+  const auditBriefPathForWorker = toWorkerPath(auditBriefPath);
+  const auditReportPathForWorker = toWorkerPath(auditReportPath);
+
+  const librarianPath = path.join(AGENTS_DIR, "memory-librarian.md");
+  const graphOpsPath = path.resolve(__dirname, "graph-ops.js");
+  const prompt = `Read the librarian instructions at ${librarianPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}.${projectCtx} Read the audit brief at ${auditBriefPathForWorker} and audit report at ${auditReportPathForWorker} first — the auditor has already triaged mechanical fixes and prepared recommendations for you. IMPORTANT: when rebuilding context files, use this absolute path for graph-ops: ${graphOpsPath}`;
+  const result = await runWorker({
+    name: `librarian-${job.id}`,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 25 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    if (project && project !== "global") releaseProjectChainLock(project);
     throw new Error(`Librarian worker exited with code ${result.exitCode}. See ${result.logFile}`);
   }
 
-  regenerateCoreContextFiles();
+  regenerateCoreContextFiles(project);
 
-  clearLegacyMarkers();
-  if (!hasActiveJob("dreamer")) {
+  if (!hasActiveJobForProject("dreamer", project || "global")) {
     enqueueJob({
       type: "dreamer",
-      payload: { reason: "librarian completed" },
+      payload: { reason: "librarian completed", project },
       triggerSource: "daemon:librarian-complete",
-      idempotencyKey: `dreamer:${Date.now()}`,
+      idempotencyKey: `dreamer:${project || "global"}:${Date.now()}`,
     });
   }
 }
 
 async function runDreamer(job: GraphMemoryJob): Promise<void> {
-  clearConsolidationLock();
+  const payload = (job.payload as unknown) as { reason: string; project?: string };
+  const project = payload.project;
+
+  let projectCtx: string;
+  if (project && project !== "global") {
+    ensureDreamDirectories(project);
+    projectCtx = ` Project: ${project}. Focus on project-specific associative memory. Write dream artifacts to ${toWorkerPath(getProjectDreamsDir(project))}.`;
+  } else {
+    projectCtx = "";
+  }
+
   const dreamerPath = path.join(AGENTS_DIR, "memory-dreamer.md");
   const graphOpsPath = path.resolve(__dirname, "graph-ops.js");
-  const prompt = `Read the dreamer instructions at ${dreamerPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. IMPORTANT: when rebuilding DREAMS.md, use this absolute path for graph-ops: ${graphOpsPath}`;
-  const result = await runPipelineWorker({
+  const prompt = `Read the dreamer instructions at ${dreamerPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}.${projectCtx} IMPORTANT: when rebuilding DREAMS.md, use this absolute path for graph-ops: ${graphOpsPath}`;
+  const result = await runWorker({
     name: `dreamer-${job.id}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 8 * 60_000,
+    timeoutMs: 15 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1086,51 +1309,15 @@ async function runDreamer(job: GraphMemoryJob): Promise<void> {
   updateRunningJob(job);
 
   if (result.exitCode !== 0) {
+    if (project && project !== "global") releaseProjectChainLock(project);
     throw new Error(`Dreamer worker exited with code ${result.exitCode}. See ${result.logFile}`);
   }
 
   regenerateDreamContext();
 
-  clearLegacyMarkers();
-}
-
-async function runDreamerV3(job: GraphMemoryJob): Promise<void> {
-  const payload = job.payload as { reason: string };
-  const dreamerPromptPath = path.join(AGENTS_DIR, "memory-dreamer-v3.md");
-  const input = buildDreamerV3Input();
-
-  const obsDir = CONFIG.paths.v3PipelineObservations;
-  if (!fs.existsSync(obsDir)) fs.mkdirSync(obsDir, { recursive: true });
-  const obsDirForWorker = toWorkerPath(obsDir);
-
-  const prompt = "Read the dreamer v3 instructions at " + dreamerPromptPath + ", then follow them. Graph root: " + CONFIG.paths.graphRoot + ". Write dream JSON files to " + obsDirForWorker + ". Reason: " + payload.reason + "\n\n" + input;
-
-  const result = await runPipelineWorker({
-    name: "dreamer-v3-" + job.id,
-    prompt,
-    graphRoot: CONFIG.paths.graphRoot,
-    logDir: CONFIG.paths.pipelineLogs,
-    addDirs: [AGENTS_DIR],
-    timeoutMs: 8 * 60_000,
-  });
-
-  job.logFile = result.logFile;
-  job.workerPid = result.pid;
-  updateRunningJob(job);
-
-  if (result.exitCode !== 0) {
-    throw new Error("Dreamer v3 worker exited with code " + result.exitCode + ". See " + result.logFile);
+  if (project && project !== "global") {
+    releaseProjectChainLock(project);
   }
-
-  const toolResult = processDreamerV3Outputs();
-
-  activityBus.log("system:info", "Dreamer v3 run complete", {
-    jobId: job.id,
-    reason: payload.reason,
-    dreamsProposed: toolResult.dreamsProposed,
-    dreamsPromoted: toolResult.dreamsPromoted,
-    errors: toolResult.errors.length,
-  });
 }
 
 async function runMemoryAnalysis(job: GraphMemoryJob): Promise<void> {
@@ -1144,13 +1331,13 @@ async function runMemoryAnalysis(job: GraphMemoryJob): Promise<void> {
 
   const prompt = `Read the analysis instructions at ${analysisPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Brief date: ${payload.briefDate}. Timezone: ${payload.timeZone}. Analysis input JSON: ${analysisInputPathForWorker}. Write the markdown brief to ${markdownPathForWorker} and the JSON brief to ${jsonPathForWorker}. Prefer the curated analysis input over broad filesystem scans.`;
 
-  const result = await runPipelineWorker({
+  const result = await runWorker({
     name: `memory-analysis-${job.id}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
     logDir: CONFIG.paths.pipelineLogs,
     addDirs: [AGENTS_DIR],
-    timeoutMs: 12 * 60_000,
+    timeoutMs: 20 * 60_000,
   });
 
   job.logFile = result.logFile;
@@ -1218,7 +1405,7 @@ async function runNotionInbound(job: GraphMemoryJob): Promise<void> {
 
     const prompt = `Read the Notion inbound instructions at ${inboundAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Inbound input: ${inputPathForWorker}. Write the inbound plan to ${planPathForWorker}. Date: ${payload.date}.`;
 
-    const result = await runPipelineWorker({
+    const result = await runWorker({
       name: `notion-inbound-${job.id}`,
       prompt,
       graphRoot: CONFIG.paths.graphRoot,
@@ -1287,7 +1474,7 @@ async function runNotionMerge(edit: InboundEdit, jobId: string, date: string): P
 
   const prompt = `Read the Notion merge instructions at ${mergeAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Merge input: ${inputPathForWorker}. Write the merge result to ${resultPathForWorker}.`;
 
-  const result = await runPipelineWorker({
+  const result = await runWorker({
     name: `notion-merge-${sanitizedKey}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
@@ -1328,8 +1515,329 @@ async function runNotionMerge(edit: InboundEdit, jobId: string, date: string): P
   }
 }
 
+async function runNotionTriage(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as NotionInboundTriagePayload;
+
+  activityBus.log("notion-triage:start", `Notion triage starting: ${payload.events.length} event(s)`, {
+    jobId: job.id,
+    date: payload.date,
+    eventCount: payload.events.length,
+  });
+
+  type TriageRoute = "ignore" | "record" | "enrich" | "both";
+  interface TriageDecision {
+    pageId: string;
+    notionKey: string | null;
+    eventType: string;
+    route: TriageRoute;
+    target: string;
+    reason: string;
+  }
+
+  const IGNORE_EVENTS = new Set([
+    "page.deleted", "page.undeleted", "page.locked", "page.unlocked",
+    "page.moved",
+    "database.created", "database.deleted", "database.undeleted",
+    "database.moved", "database.content_updated", "database.schema_updated",
+    "data_source.created", "data_source.deleted", "data_source.undeleted",
+    "data_source.moved", "data_source.content_updated", "data_source.schema_updated",
+    "comment.updated", "comment.deleted",
+  ]);
+
+  const decisions: TriageDecision[] = [];
+  const skipped: Array<{ pageId: string; reason: string }> = [];
+
+  for (const event of payload.events) {
+    const isBot = (event.authors || []).some(a => a.type === "bot" || a.type === "scheduled_bot");
+    if (isBot) {
+      skipped.push({ pageId: event.pageId, reason: "bot-authored" });
+      continue;
+    }
+
+    if (IGNORE_EVENTS.has(event.eventType)) {
+      skipped.push({ pageId: event.pageId, reason: `structural: ${event.eventType}` });
+      continue;
+    }
+
+    const route = classifyEvent(event);
+    const target = resolveStewardTarget(event.notionKey, event.eventType);
+
+    decisions.push({
+      pageId: event.pageId,
+      notionKey: event.notionKey,
+      eventType: event.eventType,
+      route,
+      target,
+      reason: triageReason(event.eventType, route),
+    });
+  }
+
+  const recordDecisions = decisions.filter(d => d.route === "record" || d.route === "both");
+  const enrichDecisions = decisions.filter(d => d.route === "enrich" || d.route === "both");
+
+  activityBus.log("notion-triage:complete", `Triage complete: ${recordDecisions.length} record, ${enrichDecisions.length} enrich, ${skipped.length} skipped`, {
+    jobId: job.id,
+    recordCount: recordDecisions.length,
+    enrichCount: enrichDecisions.length,
+    skippedCount: skipped.length,
+  });
+
+  if (recordDecisions.length > 0) {
+    const deltas = recordDecisions.map(d => ({
+      notionKey: d.notionKey || d.pageId,
+      editType: d.eventType.includes("comment") ? "preference_edit" as const : "new_section" as const,
+      sourceNodes: [],
+      observation: `[Notion triage] ${d.reason}`,
+      targetFile: "",
+      action: "create_observation" as const,
+      payload: { eventType: d.eventType, target: d.target },
+    }));
+    const applyResult = applyInboundDeltas(deltas);
+    writeInboundDeltas(deltas, payload.date);
+    activityBus.log("notion-triage:record", `Recorded ${applyResult.applied} observation(s) from triage`, {
+      jobId: job.id,
+      applied: applyResult.applied,
+      errors: applyResult.errors,
+    });
+  }
+
+  if (enrichDecisions.length > 0) {
+    const enrichPayload: NotionInboundEnrichPayload = {
+      reason: "triage",
+      triageId: job.id,
+      routes: enrichDecisions.map(d => ({
+        action: d.route === "both" ? "both" as const : "enrich" as const,
+        target: d.target,
+        notionKey: d.notionKey || d.pageId,
+        pageId: d.pageId,
+        reason: d.reason,
+      })),
+      date: payload.date,
+    };
+
+    const { job: enrichJob, created } = enqueueJob({
+      type: "notion_inbound_enrich",
+      payload: enrichPayload,
+      triggerSource: `triage:${job.id}`,
+      idempotencyKey: `enrich:${payload.date}:${job.id}`,
+    });
+
+    if (created) {
+      activityBus.log("notion-triage:enrich", `Queued enrichment job`, {
+        jobId: enrichJob.id,
+        itemCount: enrichDecisions.length,
+      });
+    }
+  }
+}
+
+type TriageRoute = "ignore" | "record" | "enrich" | "both";
+
+interface TriageEvent {
+  eventType: string;
+  pageId: string;
+  notionKey: string | null;
+  authors: Array<{ id: string; type: string }>;
+  parentType?: string;
+}
+
+function classifyEvent(event: TriageEvent): TriageRoute {
+  if (event.eventType === "comment.created") return "record";
+  if (event.eventType === "page.content_updated") return "record";
+  if (event.eventType === "page.properties_updated") return "record";
+
+  if (event.eventType === "page.created") {
+    const isDatabase = event.parentType === "database" || event.parentType === "data_source";
+    if (isDatabase) {
+      try {
+        const content = getPage(event.pageId);
+        const bodyText = content.replace(/[\s\n\r]/g, "");
+        if (bodyText.length < 100) return "enrich";
+        return "both";
+      } catch {
+        return "enrich";
+      }
+    }
+    return "enrich";
+  }
+
+  return "record";
+}
+
+function resolveStewardTarget(notionKey: string | null, eventType: string): string {
+  if (!notionKey) return "tasks_steward";
+  if (notionKey.startsWith("task:")) return "tasks_steward";
+  if (notionKey.startsWith("decisions/")) return "knowledge_steward";
+  if (notionKey.startsWith("dream:")) return "knowledge_steward";
+  if (notionKey.startsWith("pattern:")) return "knowledge_steward";
+  if (notionKey.startsWith("projects/")) return "workspace_steward";
+  if (notionKey === "how-i-think" || notionKey === "patterns-insights" || notionKey === "dreams") return "workspace_steward";
+  return "tasks_steward";
+}
+
+function triageReason(eventType: string, route: TriageRoute): string {
+  if (route === "ignore") return `Ignored: ${eventType}`;
+  if (route === "enrich") return `New sparse content from ${eventType} — needs enrichment`;
+  if (route === "both") return `Substantive new content from ${eventType} — record and enrich`;
+  return `Human edit via ${eventType} — recording to memory`;
+}
+
+async function runNotionEnrich(job: GraphMemoryJob): Promise<void> {
+  const payload = job.payload as NotionInboundEnrichPayload;
+
+  activityBus.log("notion-enrich:start", `Notion enrichment starting: ${payload.routes.length} item(s)`, {
+    jobId: job.id,
+    date: payload.date,
+    itemCount: payload.routes.length,
+  });
+
+  const notionState = readNotionSyncState();
+
+  const enrichItems = payload.routes.map(route => {
+    let properties: Record<string, unknown> = {};
+    let bodyContent = "";
+    try {
+      const pageContent = getPage(route.pageId);
+      bodyContent = pageContent;
+    } catch {}
+
+    return {
+      notionKey: route.notionKey,
+      pageId: route.pageId,
+      properties,
+      bodyContent,
+      triageReason: route.reason,
+    };
+  });
+
+  const enrichInputPath = path.join(CONFIG.paths.graphRoot, `.notion-enrich-input-${payload.date}-${job.id}.json`);
+  fs.writeFileSync(enrichInputPath, JSON.stringify({
+    date: payload.date,
+    enrichmentId: job.id,
+    target: payload.routes[0]?.target || "tasks_steward",
+    items: enrichItems,
+  }, null, 2));
+
+  const enrichInputPathForWorker = toWorkerPath(enrichInputPath);
+  const enrichPlanPathForWorker = toWorkerPath(
+    path.join(CONFIG.paths.graphRoot, `.notion-enrich-plan-${payload.date}-${job.id}.json`)
+  );
+  const enrichAgentPath = path.join(AGENTS_DIR, "notion-enrichment-steward.md");
+  const syncStatePathForWorker = toWorkerPath(CONFIG.paths.notionSyncState);
+
+  let manifestPathForWorker = "";
+  try {
+    const manifest = buildWorkspaceManifest(notionState);
+    const manifestPath = writeWorkspaceManifest(manifest);
+    manifestPathForWorker = toWorkerPath(manifestPath);
+  } catch {}
+
+  const prompt = `Read the enrichment steward instructions at ${enrichAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Enrichment input: ${enrichInputPathForWorker}. Sync state: ${syncStatePathForWorker}. Workspace manifest: ${manifestPathForWorker}. Write the enrichment plan to ${enrichPlanPathForWorker}. Date: ${payload.date}.`;
+
+  const result = await runWorker({
+    name: `notion-enrich-${job.id}`,
+    prompt,
+    graphRoot: CONFIG.paths.graphRoot,
+    logDir: CONFIG.paths.pipelineLogs,
+    addDirs: [AGENTS_DIR],
+    timeoutMs: 10 * 60_000,
+  });
+
+  job.logFile = result.logFile;
+  job.workerPid = result.pid;
+  updateRunningJob(job);
+
+  if (result.exitCode !== 0) {
+    throw new Error(`Enrichment worker exited with code ${result.exitCode}. See ${result.logFile}`);
+  }
+
+  const enrichPlanPath = path.join(CONFIG.paths.graphRoot, `.notion-enrich-plan-${payload.date}-${job.id}.json`);
+  if (!fs.existsSync(enrichPlanPath)) {
+    activityBus.log("notion-enrich:complete", "Enrichment worker produced no plan");
+    return;
+  }
+
+  const enrichPlan = JSON.parse(fs.readFileSync(enrichPlanPath, "utf-8")) as {
+    enrichmentId: string;
+    updates: Array<{
+      notionPageId: string;
+      notionKey: string;
+      type: string;
+      changedProperties: Record<string, unknown>;
+      markdown: string;
+      sourceNodes: string[];
+    }>;
+    observations: Array<{
+      project: string;
+      type: string;
+      observation: string;
+      evidence: string[];
+      confidence: number;
+    }>;
+  };
+
+  if (enrichPlan.updates.length > 0) {
+    const stewardPlan: StewardPlan = {
+      steward: "enrichment",
+      generatedAt: new Date().toISOString(),
+      creates: [],
+      updates: enrichPlan.updates.map(u => ({
+        ...u,
+        type: (u.type === "wiki_page" ? "wiki_page" : "database_row") as "database_row" | "wiki_page",
+        mergeStrategy: "replace" as const,
+      })),
+      archives: [],
+    };
+
+    const syncPlan = mergeStewardPlans([stewardPlan], job.id);
+    const syncResult = executeNotionSync(syncPlan, notionState);
+    writeNotionSyncState(notionState);
+
+    activityBus.log("notion-enrich:sync", `Enrichment sync: ${syncResult.created} created, ${syncResult.updated} updated`, {
+      jobId: job.id,
+      ...syncResult,
+    });
+  }
+
+  if (enrichPlan.observations && enrichPlan.observations.length > 0) {
+    for (const obs of enrichPlan.observations) {
+      try {
+        if (obs.project && obs.project !== "global") {
+          ensureLens(obs.project);
+          appendProjectObservation(obs.project, {
+            type: "notion_inbound",
+            observation: obs.observation,
+            evidence: obs.evidence,
+            confidence: obs.confidence,
+            sessionId: "notion-enrich",
+          });
+        } else {
+          appendObservation({
+            layer: "global",
+            type: "notion_inbound",
+            observation: obs.observation,
+            evidence: obs.evidence,
+            confidence: obs.confidence,
+            sessionId: "notion-enrich",
+          });
+        }
+      } catch (err: any) {
+        activityBus.log("notion-enrich:error", `Failed to write observation: ${err.message}`);
+      }
+    }
+  }
+
+  activityBus.log("notion-enrich:complete", `Enrichment complete: ${enrichPlan.updates.length} updates, ${(enrichPlan.observations || []).length} observations`, {
+    jobId: job.id,
+    updates: enrichPlan.updates.length,
+    observations: (enrichPlan.observations || []).length,
+  });
+
+  try { fs.unlinkSync(enrichInputPath); } catch {}
+}
+
 async function runNotionSync(job: GraphMemoryJob): Promise<void> {
-  const payload = job.payload as { reason: string; date: string; forceFullSync?: boolean; batches?: string[]; skipInbound?: boolean; batchIndex?: number };
+  const payload = job.payload as { reason: string; date: string; forceFullSync?: boolean; skipInbound?: boolean };
 
   activityBus.log("notion-sync:start", `Notion sync starting: ${payload.reason}`, {
     jobId: job.id,
@@ -1343,8 +1851,52 @@ async function runNotionSync(job: GraphMemoryJob): Promise<void> {
     return;
   }
 
+  const ntnReady = process.env.NOTION_API_TOKEN
+    ? { installed: true, authenticated: true, workspaceSelected: true }
+    : checkNtnReady();
+  if (!ntnReady.installed || !ntnReady.authenticated || !ntnReady.workspaceSelected) {
+    const reason = ntnReady.error || "Notion CLI is not ready";
+    activityBus.log("notion-sync:error", `Notion sync blocked — ${reason}`, {
+      jobId: job.id,
+      installed: ntnReady.installed,
+      authenticated: ntnReady.authenticated,
+      workspaceSelected: ntnReady.workspaceSelected,
+    });
+    throw new Error(`Notion sync blocked: ${reason}`);
+  }
+
   if (!payload.skipInbound && !CONFIG.notionSync.skipInbound) {
     const inboundResult = detectInboundEdits(notionState);
+
+    const commentDetections = detectNewComments(notionState);
+    if (commentDetections.length > 0) {
+      const commentDeltas = buildCommentDetections(commentDetections);
+      const { applied, errors: commentErrors } = applyInboundDeltas(commentDeltas);
+      activityBus.log("notion-sync:comments", `Processed ${applied} new comment(s) from Notion`, {
+        jobId: job.id,
+        commentCount: commentDetections.reduce((sum, d) => sum + d.comments.length, 0),
+      });
+      if (commentErrors.length > 0) {
+        activityBus.log("notion-inbound:error", `Comment processing had ${commentErrors.length} errors`, {
+          jobId: job.id,
+          errors: commentErrors,
+        });
+      }
+    }
+
+    const newNotionTasks = detectNewNotionTasks(notionState);
+    if (newNotionTasks.length > 0) {
+      activityBus.log("notion-sync:new-tasks", `Detected ${newNotionTasks.length} new task(s) created in Notion`, {
+        jobId: job.id,
+        tasks: newNotionTasks.map(t => t.name),
+      });
+      for (const task of newNotionTasks) {
+        if (task.project) {
+          addNotionPickupItem(task.project, `[Notion] New task "${task.name}" (${task.status})`);
+        }
+      }
+    }
+
     writeNotionSyncState(notionState);
 
     if (inboundResult.edits.length > 0) {
@@ -1382,122 +1934,178 @@ async function runNotionSync(job: GraphMemoryJob): Promise<void> {
     return;
   }
 
-  const CHUNK_SIZE = 100;
-  const batchIndex = payload.batchIndex ?? 0;
-  const start = batchIndex * CHUNK_SIZE;
-  const chunk = changedItems.slice(start, start + CHUNK_SIZE);
-  const hasMore = start + CHUNK_SIZE < changedItems.length;
-
-  if (chunk.length === 0) {
-    notionState.lastSyncAt = new Date().toISOString();
-    writeNotionSyncState(notionState);
-    activityBus.log("notion-sync:complete", "Notion sync complete — all batches processed", {
-      jobId: job.id,
-      date: payload.date,
-      totalBatches: batchIndex,
-    });
-    return;
-  }
-
-  activityBus.log("notion-sync:start", `Notion sync batch ${batchIndex + 1}: ${chunk.length} items (${start + 1}-${start + chunk.length} of ${changedItems.length})`, {
+  activityBus.log("notion-sync:start", `Notion sync: ${changedItems.length} changed items`, {
     jobId: job.id,
     date: payload.date,
-    batchIndex,
-    batchSize: chunk.length,
     totalChanged: changedItems.length,
-    hasMore,
   });
 
   const partialDiff: import("./notion-sync.js").NotionSyncDiff = {
     generatedAt: diff.generatedAt,
-    items: chunk,
+    items: changedItems,
     stats: {
-      new: chunk.filter((i) => i.classification === "new").length,
-      updated: chunk.filter((i) => i.classification === "updated").length,
-      archived: chunk.filter((i) => i.classification === "archived").length,
+      new: changedItems.filter((i) => i.classification === "new").length,
+      updated: changedItems.filter((i) => i.classification === "updated").length,
+      archived: changedItems.filter((i) => i.classification === "archived").length,
       unchanged: 0,
-      total: chunk.length,
+      total: changedItems.length,
     },
-    batches: [...new Set(chunk.map((i) => i.batch))],
+    batches: [...new Set(changedItems.map((i) => i.batch))],
   };
 
   const diffReportPath = writeDiffReport(partialDiff);
   const diffReportPathForWorker = toWorkerPath(diffReportPath);
   const statePathForWorker = toWorkerPath(CONFIG.paths.notionSyncState);
-  const planPathForWorker = toWorkerPath(path.join(CONFIG.paths.graphRoot, ".notion-sync-plan.json"));
-  const syncAgentPath = path.join(AGENTS_DIR, "memory-notion-sync.md");
 
-  const prompt = `Read the Notion sync instructions at ${syncAgentPath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Diff report: ${diffReportPathForWorker}. Current Notion state: ${statePathForWorker}. Write the sync plan to ${planPathForWorker}. Date: ${payload.date}. This is batch ${batchIndex + 1} of a chunked sync. Only produce a plan for the items in this diff report.`;
-
-  const result = await runPipelineWorker({
-    name: `notion-sync-b${batchIndex}-${job.id}`,
-    prompt,
-    graphRoot: CONFIG.paths.graphRoot,
-    logDir: CONFIG.paths.pipelineLogs,
-    addDirs: [AGENTS_DIR],
-    timeoutMs: 15 * 60_000,
-  });
-
-  job.logFile = result.logFile;
-  job.workerPid = result.pid;
-  updateRunningJob(job);
-
-  if (result.exitCode !== 0) {
-    throw new Error(`Notion sync worker exited with code ${result.exitCode}. See ${result.logFile}`);
+  let manifestPathForWorker = "";
+  try {
+    const manifest = buildWorkspaceManifest(notionState);
+    const manifestPath = writeWorkspaceManifest(manifest);
+    manifestPathForWorker = toWorkerPath(manifestPath);
+    activityBus.log("notion-sync:manifest", `Workspace manifest built: ${Object.keys(manifest.pages).length} pages, ${Object.values(manifest.databases).reduce((s, d) => s + d.rowCount, 0)} database rows`, {
+      jobId: job.id,
+      pageCount: Object.keys(manifest.pages).length,
+      totalRows: Object.values(manifest.databases).reduce((s, d) => s + d.rowCount, 0),
+    });
+  } catch (err: any) {
+    activityBus.log("notion-sync:warn", `Manifest build failed (agent will work without it): ${err.message}`, {
+      jobId: job.id,
+    });
   }
 
-  const plan = readSyncPlan();
-  if (!plan) {
-    activityBus.log("notion-sync:error", "Notion sync worker completed without producing a sync plan");
+  const stewardDefs = [
+    { name: "projects", agentFile: "notion-project-steward.md", planFile: ".notion-plan-projects.json" },
+    { name: "knowledge", agentFile: "notion-knowledge-steward.md", planFile: ".notion-plan-knowledge.json" },
+    { name: "workspace", agentFile: "notion-workspace-steward.md", planFile: ".notion-plan-workspace.json" },
+    { name: "tasks", agentFile: "notion-tasks-steward.md", planFile: ".notion-plan-tasks.json" },
+  ];
+
+  const stewardPlans: StewardPlan[] = [];
+
+  for (const steward of stewardDefs) {
+    const agentPath = path.join(AGENTS_DIR, steward.agentFile);
+    const planOutputPath = path.join(CONFIG.paths.graphRoot, steward.planFile);
+    const planOutputPathForWorker = toWorkerPath(planOutputPath);
+
+    const prompt = `Read the steward instructions at ${agentPath}. Graph root: ${CONFIG.paths.graphRoot}. Diff report: ${diffReportPathForWorker}. Sync state: ${statePathForWorker}. Workspace manifest: ${manifestPathForWorker}. Write your plan to ${planOutputPathForWorker}. Date: ${payload.date}.`;
+
+    activityBus.log("notion-sync:steward", `Running ${steward.name} steward`, { jobId: job.id, steward: steward.name });
+
+    let result;
+    try {
+      result = await runWorker({
+        name: `notion-${steward.name}-${job.id}`,
+        prompt,
+        graphRoot: CONFIG.paths.graphRoot,
+        logDir: CONFIG.paths.pipelineLogs,
+        addDirs: [AGENTS_DIR],
+        timeoutMs: 10 * 60_000,
+      });
+    } catch (err: any) {
+      activityBus.log("notion-sync:warn", `${steward.name} steward failed: ${err.message}`, {
+        jobId: job.id,
+        steward: steward.name,
+      });
+      continue;
+    }
+
+    job.logFile = result.logFile;
+    job.workerPid = result.pid;
+    updateRunningJob(job);
+
+    if (result.exitCode !== 0) {
+      activityBus.log("notion-sync:warn", `${steward.name} steward exited with code ${result.exitCode}`, {
+        jobId: job.id,
+        steward: steward.name,
+        logFile: result.logFile,
+      });
+      continue;
+    }
+
+    const stewardPlan = readStewardPlan(planOutputPath);
+    if (stewardPlan) {
+      stewardPlans.push(stewardPlan);
+      activityBus.log("notion-sync:steward", `${steward.name} steward produced ${stewardPlan.creates.length} creates, ${stewardPlan.updates.length} updates, ${stewardPlan.archives.length} archives`, {
+        jobId: job.id,
+        steward: steward.name,
+        creates: stewardPlan.creates.length,
+        updates: stewardPlan.updates.length,
+        archives: stewardPlan.archives.length,
+      });
+    } else {
+      activityBus.log("notion-sync:warn", `${steward.name} steward completed without producing a plan`, {
+        jobId: job.id,
+        steward: steward.name,
+      });
+    }
+  }
+
+  if (stewardPlans.length === 0) {
+    activityBus.log("notion-sync:complete", "Notion sync skipped — no steward plans produced", {
+      jobId: job.id,
+      date: payload.date,
+    });
     return;
   }
 
-  const syncResult = executeNotionSync(plan, notionState);
-  notionState.lastSyncAt = new Date().toISOString();
-  writeNotionSyncState(notionState);
+  const mergedPlan = mergeStewardPlans(stewardPlans, job.id);
+  const mergedPlanPath = path.join(CONFIG.paths.graphRoot, ".notion-sync-plan.json");
+  fs.writeFileSync(mergedPlanPath, JSON.stringify(mergedPlan, null, 2));
 
-  activityBus.log("notion-sync:complete", `Notion sync batch ${batchIndex + 1} complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.archived} archived`, {
+  activityBus.log("notion-sync:merge", `Merged ${stewardPlans.length} steward plans: ${mergedPlan.creates.length} creates, ${mergedPlan.updates.length} updates, ${mergedPlan.archives.length} archives`, {
     jobId: job.id,
-    date: payload.date,
-    batchIndex,
-    batchSize: chunk.length,
-    hasMore,
-    ...syncResult,
+    stewards: stewardPlans.map(p => p.steward),
   });
+
+  const syncResult = executeNotionSync(mergedPlan, notionState);
 
   if (syncResult.errors.length > 0) {
     activityBus.log("notion-sync:error", `Notion sync had ${syncResult.errors.length} errors`, {
       jobId: job.id,
       errors: syncResult.errors,
     });
+    throw new Error(`Notion sync failed with ${syncResult.errors.length} error(s)`);
   }
 
-  if (hasMore) {
-    enqueueJob({
-      type: "notion_sync",
-      payload: {
-        reason: `notion sync batch ${batchIndex + 2} for ${payload.date}`,
-        date: payload.date,
-        skipInbound: true,
-        batchIndex: batchIndex + 1,
-      },
-      triggerSource: "daemon:notion-sync-next-batch",
-      idempotencyKey: `notion-sync:${payload.date}:batch-${batchIndex + 1}`,
-    });
-    activityBus.log("notion-sync:start", `Enqueued next batch (${batchIndex + 2})`, {
-      jobId: job.id,
-      nextBatch: batchIndex + 1,
-    });
+  for (const item of changedItems) {
+    if (item.classification === "new" || item.classification === "updated") {
+      if (notionState.rows[item.key]) {
+        notionState.rows[item.key].lastSourceHash = item.contentHash;
+      }
+      for (const pageState of Object.values(notionState.pages)) {
+        if (pageState.sourceNodes.some((src) => {
+          const normalized = src.replace(/^nodes\//, "").replace(/\.md$/, "");
+          return normalized === item.key || src === item.key;
+        })) {
+          pageState.lastSourceHash = item.contentHash;
+        }
+      }
+    }
   }
+
+  notionState.lastSyncAt = new Date().toISOString();
+  writeNotionSyncState(notionState);
+
+  activityBus.log("notion-sync:complete", `Notion sync complete: ${syncResult.created} created, ${syncResult.updated} updated, ${syncResult.archived} archived`, {
+    jobId: job.id,
+    date: payload.date,
+    ...syncResult,
+  });
 }
 
 async function runSkillforge(job: GraphMemoryJob): Promise<void> {
-  const payload = job.payload as { nodePath: string; project: string; reason: string; score: number };
+  const payload = job.payload as { nodePath: string; project: string; reason: string; score: number; sourceNodes?: string[]; candidateType?: string };
   const skillforgePath = path.join(AGENTS_DIR, "memory-skillforge.md");
 
-  const prompt = `Read the skillforge instructions at ${skillforgePath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Source node path: ${payload.nodePath}. Project: ${payload.project}. Score: ${payload.score}. Reason: ${payload.reason}.`;
+  const sourceNodes = payload.sourceNodes || [payload.nodePath];
+  const candidateType = payload.candidateType || "single_node";
+  const contentHash = sourceNodes.length > 1
+    ? computeMultiNodeContentHash(sourceNodes)
+    : computeNodeContentHash(sourceNodes[0]);
 
-  const result = await runPipelineWorker({
+  const prompt = `Read the skillforge instructions at ${skillforgePath}, then follow them. Graph root: ${CONFIG.paths.graphRoot}. Source node paths: ${sourceNodes.join(", ")}. Candidate type: ${candidateType}. Project: ${payload.project}. Score: ${payload.score}. Content hash: ${contentHash}. Reason: ${payload.reason}.`;
+
+  const result = await runWorker({
     name: `skillforge-${job.id}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
@@ -1514,40 +2122,45 @@ async function runSkillforge(job: GraphMemoryJob): Promise<void> {
     throw new Error(`Skillforge worker exited with code ${result.exitCode}. See ${result.logFile}`);
   }
 
-  const manifestDir = CONFIG.paths.skillforgeManifests;
-  const sanitizedPath = payload.nodePath.replace(/\//g, "-");
-  const manifestPath = path.join(manifestDir, `${sanitizedPath}.json`);
+  const expectedKey = manifestKeyForNodes(sourceNodes);
+  const manifestPath = path.join(CONFIG.paths.skillforgeManifests, expectedKey);
   if (!fs.existsSync(manifestPath)) {
     throw new Error(`Skillforge completed without writing manifest: ${manifestPath}`);
   }
 
-  activityBus.log("skillforge:complete", `Skillforge complete: ${payload.nodePath}`, {
+  activityBus.log("skillforge:complete", `Skillforge complete: ${sourceNodes.join(", ")}`, {
     jobId: job.id,
-    nodePath: payload.nodePath,
+    sourceNodes,
+    candidateType,
     project: payload.project,
   });
 
   try {
     const indexPath = CONFIG.paths.index;
     const index = JSON.parse(fs.readFileSync(indexPath, "utf-8"));
-    const entry = index.find((e: any) => e.path === payload.nodePath);
-    if (entry) {
-      entry.skillforged_at = new Date().toISOString();
-      fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
+    const now = new Date().toISOString();
+    let updated = false;
+    for (const nodePath of sourceNodes) {
+      const entry = index.find((e: any) => e.path === nodePath);
+      if (entry) {
+        entry.skillforged_at = now;
+        updated = true;
+      }
     }
+    if (updated) fs.writeFileSync(indexPath, JSON.stringify(index, null, 2));
   } catch { /* non-critical */ }
 }
 
 async function runSkillforgeRefresh(job: GraphMemoryJob): Promise<void> {
-  const payload = job.payload as { manifestPath: string; nodePath: string; skillName: string; project: string; reason: string };
+  const payload = job.payload as { manifestPath: string; nodePath: string; skillName: string; project: string; reason: string; sourceNodes?: string[] };
   const skillforgePath = path.join(AGENTS_DIR, "memory-skillforge.md");
 
-  const manifestRaw = fs.readFileSync(payload.manifestPath, "utf-8");
-  const manifest = JSON.parse(manifestRaw);
+  const sourceNodes = payload.sourceNodes || [payload.nodePath];
+  const candidateType = sourceNodes.length > 1 ? "cluster" : "single_node";
 
-  const prompt = `Read the skillforge instructions at ${skillforgePath}, then follow them. This is a REFRESH of an existing skill. Graph root: ${CONFIG.paths.graphRoot}. Source node path: ${payload.nodePath}. Project: ${payload.project}. Skill name: ${payload.skillName}. Reason: ${payload.reason}. The skill files already exist — overwrite them with updated content. Increment refresh_count in the manifest and update content_hash and last_refreshed_at.`;
+  const prompt = `Read the skillforge instructions at ${skillforgePath}, then follow them. This is a REFRESH of an existing skill. Graph root: ${CONFIG.paths.graphRoot}. Source node paths: ${sourceNodes.join(", ")}. Candidate type: ${candidateType}. Project: ${payload.project}. Skill name: ${payload.skillName}. Reason: ${payload.reason}. The skill files already exist — overwrite them with updated content. Increment refresh_count in the manifest and update content_hash and last_refreshed_at.`;
 
-  const result = await runPipelineWorker({
+  const result = await runWorker({
     name: `skillforge-refresh-${job.id}`,
     prompt,
     graphRoot: CONFIG.paths.graphRoot,
@@ -1564,18 +2177,22 @@ async function runSkillforgeRefresh(job: GraphMemoryJob): Promise<void> {
     throw new Error(`Skillforge refresh worker exited with code ${result.exitCode}. See ${result.logFile}`);
   }
 
-  activityBus.log("skillforge:refresh", `Skillforge refresh complete: ${payload.nodePath}`, {
+  activityBus.log("skillforge:refresh", `Skillforge refresh complete: ${sourceNodes.join(", ")}`, {
     jobId: job.id,
-    nodePath: payload.nodePath,
+    sourceNodes,
     skillName: payload.skillName,
   });
 
-  const authoritativeHash = computeNodeContentHash(payload.nodePath);
+  const authoritativeHash = sourceNodes.length > 1
+    ? computeMultiNodeContentHash(sourceNodes)
+    : computeNodeContentHash(sourceNodes[0]);
+
   if (authoritativeHash && fs.existsSync(payload.manifestPath)) {
     try {
       const mf = JSON.parse(fs.readFileSync(payload.manifestPath, "utf-8"));
       mf.content_hash = authoritativeHash;
       mf.last_refreshed_at = new Date().toISOString();
+      mf.refresh_count = (mf.refresh_count || 0) + 1;
       fs.writeFileSync(payload.manifestPath, JSON.stringify(mf, null, 2));
     } catch { /* non-critical */ }
   }
@@ -1594,23 +2211,29 @@ function maybeEnqueueSkillforgeJobs(): void {
     if (enqueued >= maxPerTick) break;
     if (hasActiveJob("skillforge")) break;
 
+    const sourceNodes = candidate.sourceNodes || [candidate.nodePath];
+    const idemKey = `skillforge:${sourceNodes.sort().join("+")}`;
+
     const { job, created } = enqueueJob({
       type: "skillforge",
       payload: {
         nodePath: candidate.nodePath,
+        sourceNodes,
+        candidateType: candidate.candidateType,
         project: candidate.project || "global",
-        reason: `skillforge score: ${candidate.score}`,
+        reason: `${candidate.candidateType} score: ${candidate.score}`,
         score: candidate.score,
       },
       triggerSource: "daemon:skillforge-scorer",
-      idempotencyKey: `skillforge:${candidate.nodePath}`,
+      idempotencyKey: idemKey,
     });
 
     if (created) {
       enqueued++;
-      activityBus.log("skillforge:job_queued", `Queued skillforge job for ${candidate.nodePath}`, {
+      activityBus.log("skillforge:job_queued", `Queued skillforge job for ${sourceNodes.join(", ")}`, {
         jobId: job.id,
-        nodePath: candidate.nodePath,
+        sourceNodes,
+        candidateType: candidate.candidateType,
         score: candidate.score,
         project: candidate.project,
       });
@@ -1631,24 +2254,26 @@ function maybeEnqueueSkillforgeRefresh(): void {
     if (enqueued >= maxPerTick) break;
     if (hasActiveJob("skillforge_refresh")) break;
 
+    const sourceNodes = entry.manifest.source_nodes || [entry.manifest.source_nodes?.[0] || ""];
     const { job, created } = enqueueJob({
       type: "skillforge_refresh",
       payload: {
         manifestPath: path.join(CONFIG.paths.skillforgeManifests, entry.fileName),
-        nodePath: entry.manifest.source_node,
+        nodePath: sourceNodes[0],
+        sourceNodes,
         skillName: entry.manifest.skill_name,
         project: entry.manifest.project,
         reason: `content hash drift: ${entry.manifestHash} → ${entry.currentHash}`,
       },
       triggerSource: "daemon:skillforge-drift",
-      idempotencyKey: `skillforge-refresh:${entry.manifest.source_node}:${entry.currentHash}`,
+      idempotencyKey: `skillforge-refresh:${sourceNodes.sort().join("+")}:${entry.currentHash}`,
     });
 
     if (created) {
       enqueued++;
-      activityBus.log("skillforge:drift_detected", `Skill drift detected for ${entry.manifest.source_node}`, {
+      activityBus.log("skillforge:drift_detected", `Skill drift detected for ${sourceNodes.join(", ")}`, {
         jobId: job.id,
-        nodePath: entry.manifest.source_node,
+        sourceNodes,
         oldHash: entry.manifestHash,
         newHash: entry.currentHash,
       });
@@ -1691,8 +2316,6 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
       return runLibrarian(job);
     case "dreamer":
       return runDreamer(job);
-    case "dreamer_v3":
-      return runDreamerV3(job);
     case "memory_analysis":
       return runMemoryAnalysis(job);
     case "skillforge":
@@ -1703,6 +2326,12 @@ async function processJob(job: GraphMemoryJob): Promise<void> {
       return runBootstrap(job);
     case "notion_sync":
       return runNotionSync(job);
+    case "notion_inbound_triage":
+      return runNotionTriage(job);
+    case "notion_inbound_enrich":
+      return runNotionEnrich(job);
+    default:
+      throw new Error(`Unknown job type: ${job.type}`);
   }
 }
 
@@ -1727,11 +2356,13 @@ function cleanupOrphanSnapshots(): void {
     const filePath = path.join(bufferDir, file);
     if (activeSnapshotPaths.has(filePath)) continue;
 
-    const stat = fs.statSync(filePath);
-    if (now - stat.mtimeMs < MAX_AGE_MS) continue;
+    try {
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs < MAX_AGE_MS) continue;
 
-    fs.unlinkSync(filePath);
-    cleaned++;
+      fs.unlinkSync(filePath);
+      cleaned++;
+    } catch {}
   }
 
   if (cleaned > 0) {
@@ -1751,31 +2382,35 @@ function scavengeStaleBuffers(): void {
     if (!file.startsWith("conversation-") || !file.endsWith(".jsonl")) continue;
 
     const filePath = path.join(bufferDir, file);
-    const stat = fs.statSync(filePath);
-    if (now - stat.mtimeMs < maxAgeMs) continue;
+    try {
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs < maxAgeMs) continue;
 
-    const content = fs.readFileSync(filePath, "utf-8").trim();
-    if (!content) {
+      const content = fs.readFileSync(filePath, "utf-8").trim();
+      if (!content) {
+        fs.unlinkSync(filePath);
+        continue;
+      }
+
+      const snapshotName = `snapshot_${Date.now()}.jsonl`;
+      const snapshotPath = path.join(bufferDir, snapshotName);
+      fs.writeFileSync(snapshotPath, content + "\n");
       fs.unlinkSync(filePath);
-      continue;
+
+      enqueueJob({
+        type: "scribe",
+        payload: {
+          snapshotPath,
+          sessionId: `stale_scavenge_${Date.now()}`,
+        },
+        triggerSource: "daemon:stale-buffer-scavenge",
+        idempotencyKey: `scribe:${snapshotPath}`,
+      });
+
+      scavenged++;
+    } catch {
+      try { fs.unlinkSync(filePath); } catch {}
     }
-
-    const snapshotName = `snapshot_${Date.now()}.jsonl`;
-    const snapshotPath = path.join(bufferDir, snapshotName);
-    fs.writeFileSync(snapshotPath, content + "\n");
-    fs.unlinkSync(filePath);
-
-    enqueueJob({
-      type: "scribe",
-      payload: {
-        snapshotPath,
-        sessionId: `stale_scavenge_${Date.now()}`,
-      },
-      triggerSource: "daemon:stale-buffer-scavenge",
-      idempotencyKey: `scribe:${snapshotPath}`,
-    });
-
-    scavenged++;
   }
 
   if (scavenged > 0) {
@@ -1783,10 +2418,96 @@ function scavengeStaleBuffers(): void {
   }
 }
 
-const GRAPH_LEVEL_TYPES = new Set(["auditor", "librarian", "dreamer"]);
+let lastLogRotation = 0;
+function rotatePipelineLogs(maxAgeDays: number = 30): void {
+  const now = Date.now();
+  if (now - lastLogRotation < 60 * 60 * 1000) return;
+  lastLogRotation = now;
 
-function hasRunningGraphLevelJob(): boolean {
-  return listJobs("running").some((j) => GRAPH_LEVEL_TYPES.has(j.type));
+  const logDir = CONFIG.paths.pipelineLogs;
+  if (!fs.existsSync(logDir)) return;
+
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  let removed = 0;
+
+  for (const file of fs.readdirSync(logDir)) {
+    if (!file.endsWith(".log") && !file.endsWith(".meta.json")) continue;
+
+    const filePath = path.join(logDir, file);
+    try {
+      const stat = fs.statSync(filePath);
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs.unlinkSync(filePath);
+        removed++;
+      }
+    } catch {
+      fs.unlinkSync(filePath);
+      removed++;
+    }
+  }
+
+  if (removed > 0) {
+    activityBus.log("system:info", `Rotated ${removed} pipeline log(s) older than ${maxAgeDays} days`);
+  }
+}
+
+function pruneSessionDirectories(maxAgeDays: number = 14): void {
+  const sessionsDir = CONFIG.paths.sessionTraces;
+  if (!fs.existsSync(sessionsDir)) return;
+
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  let removed = 0;
+
+  for (const entry of fs.readdirSync(sessionsDir)) {
+    const entryPath = path.join(sessionsDir, entry);
+    try {
+      const stat = fs.statSync(entryPath);
+      if (!stat.isDirectory()) continue;
+      if (now - stat.mtimeMs > maxAgeMs) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        removed++;
+      }
+    } catch { /* skip */ }
+  }
+
+  if (removed > 0) {
+    activityBus.log("system:info", `Pruned ${removed} session director(ies) older than ${maxAgeDays} days`);
+  }
+}
+
+function getInFlightProjectChains(inFlight: Map<string, Promise<void>>): Set<string> {
+  const projects = new Set<string>();
+  for (const job of listJobs("running")) {
+    if (!PROJECT_CHAIN_TYPES.has(job.type)) continue;
+    const project = (job.payload as unknown as Record<string, unknown>)?.project;
+    if (typeof project === "string" && project !== "global") {
+      projects.add(project);
+    }
+  }
+  return projects;
+}
+
+function maybeEnqueueProjectAuditorsFromBacklog(): void {
+  const activeProjects = new Set<string>();
+
+  for (const file of fs.readdirSync(CONFIG.paths.deltas).filter((f) => f.endsWith(".json"))) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(CONFIG.paths.deltas, file), "utf-8")) as {
+        scribes?: Array<{ deltas?: Array<{ project?: string }> }>;
+      };
+      for (const scribe of raw.scribes || []) {
+        for (const delta of scribe.deltas || []) {
+          const p = String(delta.project || "").trim();
+          if (p && p !== "global") activeProjects.add(p);
+        }
+      }
+    } catch { /* skip */ }
+  }
+
+  for (const project of activeProjects) {
+    maybeEnqueueAuditorForProject(project);
+  }
 }
 
 export async function runDaemon({ once = false }: { once?: boolean } = {}): Promise<void> {
@@ -1801,6 +2522,12 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
   process.on("SIGINT", () => { releaseDaemonLock(); process.exit(0); });
   process.on("SIGTERM", () => { releaseDaemonLock(); process.exit(0); });
 
+  if (CONFIG.notionSync.enabled) {
+    startWebhookServer(3100).catch((err: any) => {
+      activityBus.log("notion-webhook:error", `Webhook server failed to start: ${err.message}`);
+    });
+  }
+
   const concurrency = CONFIG.session.daemonConcurrency || 3;
   const inFlight = new Map<string, Promise<void>>();
 
@@ -1808,31 +2535,36 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
 
   try {
     do {
-      maybeEnqueueDailyAnalysisJob();
-      maybeEnqueueNotionSync();
-      maybeEnqueueAuditorFromScribeBacklog();
-      maybeEnqueueObserverFromScribeBacklog();
-      maybeEnqueueCompressorFromObserverBacklog();
-      reconcileProjectWorkingBacklog();
-      maybeEnqueueSkillforgeJobs();
-      maybeEnqueueSkillforgeRefresh();
-      scavengeStaleBuffers();
-      cleanupOrphanSnapshots();
-      requeueStaleRunningJobs(5 * 60_000);
+      try {
+        maybeEnqueueDailyAnalysisJob();
+        maybeEnqueueNotionSync();
+        maybeEnqueueProjectAuditorsFromBacklog();
+        maybeEnqueueObserverFromScribeBacklog();
+        maybeEnqueueCompressorFromObserverBacklog();
+        reconcileProjectWorkingBacklog();
+        maybeEnqueueSkillforgeJobs();
+        maybeEnqueueSkillforgeRefresh();
+        scavengeStaleBuffers();
+        cleanupOrphanSnapshots();
+        rotatePipelineLogs();
+        pruneSessionDirectories();
+        requeueOrphanedRunningJobs(inFlight, 60_000);
+        requeueStaleRunningJobs(30 * 60_000);
+      } catch (err: any) {
+        activityBus.log("system:error", `Tick housekeeping error: ${err.message}`);
+      }
 
-      if (!hasRunningGraphLevelJob()) {
-        try {
-          const { decayed, archived } = runDecay();
-          if (decayed > 0 || archived > 0) {
-            regenerateCoreContextFiles();
-            activityBus.log("daemon:decay", `Tick decay: ${decayed} decayed, ${archived} archived`, {
-              decayed,
-              archived,
-            });
-          }
-        } catch (err: any) {
-          activityBus.log("system:error", `Decay pass failed: ${err.message}`);
+      try {
+        const { decayed, archived } = runDecay();
+        if (decayed > 0 || archived > 0) {
+          regenerateCoreContextFiles();
+          activityBus.log("daemon:decay", `Tick decay: ${decayed} decayed, ${archived} archived`, {
+            decayed,
+            archived,
+          });
         }
+      } catch (err: any) {
+        activityBus.log("system:error", `Decay pass failed: ${err.message}`);
       }
 
       writeDaemonState({
@@ -1844,11 +2576,11 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
         inFlight: inFlight.size,
       });
 
-      const graphLevelBlocked = hasRunningGraphLevelJob();
+      const activeProjectChains = getInFlightProjectChains(inFlight);
+      const globalChainRunning = hasRunningGlobalChain(inFlight);
 
       while (inFlight.size < concurrency) {
-        const blockedTypes = graphLevelBlocked ? GRAPH_LEVEL_TYPES : undefined;
-        const job = claimNextJob(blockedTypes);
+        const job = claimNextProjectAwareJob(activeProjectChains, globalChainRunning);
         if (!job) break;
 
         const jobPromise = processJob(job)
@@ -1857,6 +2589,11 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
           .finally(() => { inFlight.delete(job.id); });
 
         inFlight.set(job.id, jobPromise);
+
+        const jobProject = (job.payload as unknown as Record<string, unknown>)?.project;
+        if (typeof jobProject === "string" && jobProject !== "global" && PROJECT_CHAIN_TYPES.has(job.type)) {
+          activeProjectChains.add(jobProject);
+        }
       }
 
       if (inFlight.size === 0) {
@@ -1869,6 +2606,10 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
         ]);
       }
     } while (!once);
+  } catch (err: any) {
+    activityBus.log("system:error", `Daemon fatal error: ${err.message}`, {
+      stack: err.stack?.slice(0, 500),
+    });
   } finally {
     if (inFlight.size > 0) {
       activityBus.log("system:info", `Daemon shutting down, waiting for ${inFlight.size} in-flight job(s)`);
@@ -1876,6 +2617,103 @@ export async function runDaemon({ once = false }: { once?: boolean } = {}): Prom
     }
     writeDaemonState({ running: false, pid: process.pid });
     releaseDaemonLock();
+  }
+}
+
+function claimNextProjectAwareJob(
+  activeProjectChains: Set<string>,
+  globalChainRunning: boolean,
+): GraphMemoryJob | null {
+  ensureJobDirectories();
+  const sorted = listJobs("queued")
+    .sort((a, b) => {
+      const priority = PRIORITY[a.type] - PRIORITY[b.type];
+      if (priority !== 0) return priority;
+      return a.createdAt.localeCompare(b.createdAt);
+    });
+
+  for (const job of sorted) {
+    if (!canClaimJob(job, activeProjectChains, globalChainRunning)) continue;
+
+    const queuedPath = jobFilePath(job, "queued");
+    if (!fs.existsSync(queuedPath)) continue;
+
+    const runningJob: GraphMemoryJob = {
+      ...job,
+      state: "running",
+      startedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attempt: job.attempt + 1,
+    };
+
+    fs.renameSync(queuedPath, jobFilePath(runningJob, "running"));
+    fs.writeFileSync(jobFilePath(runningJob, "running"), JSON.stringify(runningJob, null, 2));
+    return runningJob;
+  }
+
+  return null;
+}
+
+function canClaimJob(
+  job: GraphMemoryJob,
+  activeProjectChains: Set<string>,
+  globalChainRunning: boolean,
+): boolean {
+  if (PROJECT_CHAIN_TYPES.has(job.type)) {
+    const project = (job.payload as unknown as Record<string, unknown>)?.project;
+    if (typeof project === "string" && project !== "global") {
+      return !activeProjectChains.has(project);
+    }
+    return true;
+  }
+
+  if (GLOBAL_CHAIN_TYPES.has(job.type)) {
+    return !globalChainRunning;
+  }
+
+  return true;
+}
+
+function hasRunningGlobalChain(inFlight: Map<string, Promise<void>>): boolean {
+  if (Array.from(inFlight.keys()).some((jobId) => {
+    const runningJob = listJobs("running").find((job) => job.id === jobId);
+    return runningJob ? GLOBAL_CHAIN_TYPES.has(runningJob.type) : false;
+  })) {
+    return true;
+  }
+
+  return listJobs("running").some((job) => GLOBAL_CHAIN_TYPES.has(job.type));
+}
+
+function requeueOrphanedRunningJobs(inFlight: Map<string, Promise<void>>, maxAgeMs: number): number {
+  const now = Date.now();
+  let count = 0;
+
+  for (const job of listJobs("running")) {
+    if (inFlight.has(job.id)) continue;
+    const startedAt = job.startedAt ? Date.parse(job.startedAt) : Date.parse(job.updatedAt);
+    if (Number.isNaN(startedAt) || now - startedAt < maxAgeMs) continue;
+    requeueRunningJob(job, "Requeued orphaned running job not owned by current daemon");
+    count += 1;
+  }
+
+  if (count > 0) {
+    activityBus.log("system:info", `Requeued ${count} orphaned running job(s)`);
+  }
+
+  return count;
+}
+
+function jobFilePath(job: Pick<GraphMemoryJob, "id">, state: GraphMemoryJobState): string {
+  return path.join(stateDir(state), `${job.id}.json`);
+}
+
+function stateDir(state: GraphMemoryJobState): string {
+  switch (state) {
+    case "queued": return CONFIG.paths.jobsQueued;
+    case "running": return CONFIG.paths.jobsRunning;
+    case "done": return CONFIG.paths.jobsDone;
+    case "failed": return CONFIG.paths.jobsFailed;
   }
 }
 

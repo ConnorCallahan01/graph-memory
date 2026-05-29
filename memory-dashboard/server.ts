@@ -1,6 +1,6 @@
 import express from 'express'
 import cors from 'cors'
-import { existsSync, readFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync } from 'fs'
 import { join, resolve, relative } from 'path'
 import { homedir } from 'os'
 import { watch } from 'chokidar'
@@ -8,10 +8,11 @@ import matter from 'gray-matter'
 import { spawnSync } from 'child_process'
 
 const app = express()
+app.use(express.json())
 const PORT = Number.parseInt(process.env.MEMORY_DASHBOARD_API_PORT || process.env.PORT || '3001', 10)
 
 type JobState = 'queued' | 'running' | 'done' | 'failed'
-type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc' | 'notion_sync'
+type JobType = 'scribe' | 'working_update' | 'auditor' | 'librarian' | 'dreamer' | 'dreamer_v3' | 'memory_analysis' | 'skillforge' | 'skillforge_refresh' | 'observer' | 'compressor' | 'bootstrap_project_doc' | 'notion_sync' | 'notion_inbound_triage' | 'notion_inbound_enrich'
 
 interface RuntimeConfig {
   mode?: 'manual' | 'docker'
@@ -31,6 +32,7 @@ interface RuntimeConfig {
 }
 
 type StartupLayerId = 'priors' | 'soma' | 'map' | 'working_global' | 'working_project' | 'dreams'
+  | 'global_whisper' | 'project_whisper' | 'session_log' | 'guardrails'
 
 interface JobRecord {
   id: string
@@ -97,7 +99,8 @@ const COMMON_BIN_DIRS = [
   '/sbin',
 ]
 
-app.use(cors({ origin: 'http://localhost:5173' }))
+const corsOrigin = process.env.MEMORY_DASHBOARD_CORS_ORIGIN || 'http://localhost:5173'
+app.use(cors({ origin: corsOrigin }))
 
 function getPointerConfigPath(): string {
   return join(homedir(), '.graph-memory-config.yml')
@@ -162,6 +165,11 @@ function getPaths(graphRoot = getGraphRoot()) {
       daemonLock: join(graphRoot, '.jobs', 'daemon.lock'),
     },
     skillforge: join(graphRoot, '.skillforge'),
+    mind: join(graphRoot, 'mind'),
+    globalModel: join(graphRoot, 'mind', 'model.json'),
+    globalWhisper: join(graphRoot, 'mind', 'whisper.txt'),
+    lenses: join(graphRoot, 'lenses'),
+    v3Sessions: join(graphRoot, 'sessions'),
   }
 }
 
@@ -173,10 +181,64 @@ function safeJsonParse(filePath: string): any {
   }
 }
 
-function readIndex(graphRoot = getGraphRoot()) {
+function readLegacyIndex(graphRoot = getGraphRoot()) {
   const indexPath = getPaths(graphRoot).index
   if (!existsSync(indexPath)) return []
-  return safeJsonParse(indexPath) ?? []
+  const parsed = safeJsonParse(indexPath)
+  return Array.isArray(parsed) ? parsed : []
+}
+
+function isArchivedNodePath(nodePath: string): boolean {
+  return nodePath === '.archive' ||
+    nodePath.startsWith('.archive/') ||
+    nodePath === 'archive' ||
+    nodePath.startsWith('archive/')
+}
+
+function readIndex(graphRoot = getGraphRoot()) {
+  return readLegacyIndex(graphRoot).filter((entry: any) => !isArchivedNodePath(entry.path || ''))
+}
+
+function readV3Index(graphRoot = getGraphRoot()) {
+  const legacyEntries = readLegacyIndex(graphRoot)
+  const entries: Record<string, any> = {}
+  const categories: Record<string, string[]> = {}
+  const projects: Record<string, string[]> = {}
+
+  for (const entry of legacyEntries) {
+    if (!entry?.path) continue
+    if (isArchivedNodePath(entry.path)) continue
+    const category = entry.category || entry.path.split('/')[0] || 'uncategorized'
+    entries[entry.path] = { ...entry, category }
+    if (!categories[category]) categories[category] = []
+    categories[category].push(entry.path)
+    if (entry.project) {
+      if (!projects[entry.project]) projects[entry.project] = []
+      projects[entry.project].push(entry.path)
+    }
+  }
+
+  return { entries, categories, projects, builtAt: null, fallback: 'legacy-index' }
+}
+
+function updateNodeIndexes(graphRoot: string, nodePath: string, frontmatter: Record<string, any>) {
+  const paths = getPaths(graphRoot)
+  const patchEntry = (entry: any) => ({
+    ...entry,
+    gist: frontmatter.gist ?? entry.gist,
+    confidence: frontmatter.confidence ?? entry.confidence,
+    tags: frontmatter.tags ?? entry.tags ?? [],
+    category: frontmatter.category ?? entry.category ?? nodePath.split('/')[0],
+    project: frontmatter.project ?? entry.project,
+    updated: frontmatter.updated ?? entry.updated,
+    anti_pattern: frontmatter.anti_pattern ?? entry.anti_pattern,
+  })
+
+  const v2Index = safeJsonParse(paths.index)
+  if (Array.isArray(v2Index)) {
+    const next = v2Index.map((entry: any) => entry.path === nodePath ? patchEntry(entry) : entry)
+    writeFileSync(paths.index, JSON.stringify(next, null, 2))
+  }
 }
 
 function readNodeFile(nodePath: string) {
@@ -219,6 +281,17 @@ function countMarkdownFiles(dir: string): number {
     if (String(entry).endsWith('.md')) count += 1
   }
   return count
+}
+
+function countActiveMarkdownFiles(dir: string): number {
+  return walkNodeFiles(dir).filter(({ nodePath }) => !isArchivedNodePath(nodePath)).length
+}
+
+function countArchiveMarkdownFiles(graphRoot = getGraphRoot()): number {
+  const paths = getPaths(graphRoot)
+  return countMarkdownFiles(paths.archive) +
+    countMarkdownFiles(join(paths.nodes, '.archive')) +
+    countMarkdownFiles(join(paths.nodes, 'archive'))
 }
 
 function sanitizeProjectSlug(projectName: string): string {
@@ -680,7 +753,7 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
 
   const notionSyncJobState = hasJobInFlight(jobs, 'notion_sync')
   const notionSyncEnabled = (() => {
-    const configPath = join(graphRoot, '..', 'config.yml')
+    const configPath = join(graphRoot, 'config.yml')
     if (!existsSync(configPath)) return false
     const raw = readFileSync(configPath, 'utf-8')
     return /notionSync\.enabled:\s*true/i.test(raw)
@@ -838,10 +911,153 @@ function buildPipelineCutoffs(graphRoot = getGraphRoot(), jobs = readAllJobs(gra
   ]
 }
 
+interface PipelineStageProgress {
+  stage: string
+  label: string
+  current: number
+  threshold: number | null
+  remaining: number | null
+  status: 'counting' | 'ready' | 'running' | 'queued' | 'waiting' | 'idle' | 'done'
+  detail: string
+}
+
+function getProjectPipelineProgress(graphRoot: string, project: string): PipelineStageProgress[] {
+  const jobs = readAllJobs(graphRoot)
+  const slug = sanitizeProjectSlug(project)
+
+  const bufferForProject = readBufferCountsByProject(graphRoot).find(b => b.project === project)
+  const bufferCount = bufferForProject?.count ?? 0
+
+  const hasJob = (type: JobType) => {
+    const state = hasJobInFlight(jobs, type)
+    if (!state) {
+      const projectJob = [...jobs.running, ...jobs.queued].find(j =>
+        j.type === type && (j.payload?.project === project || j.payload?.project === slug)
+      )
+      return projectJob ? (projectJob.state as 'running' | 'queued') : null
+    }
+    return state
+  }
+
+  const projectScribes = jobs.done.filter(j => {
+    if (j.type !== 'scribe') return false
+    return j.payload?.project === project || j.payload?.project === slug
+  })
+
+  const projectAuditors = jobs.done.filter(j => {
+    if (j.type !== 'auditor') return false
+    return j.payload?.project === project || j.payload?.project === slug
+  })
+
+  const lastAuditorMs = projectAuditors.map(j => latestJobTime(j)).sort((a, b) => b - a)[0] || 0
+  const scribesSinceAuditor = projectScribes.filter(j => latestJobTime(j) > lastAuditorMs).length
+
+  const allScribeSessions = projectScribes.map(j => (j.payload as any)?.sessionId).filter(Boolean) as string[]
+  const deltasDir = getPaths(graphRoot).deltas
+  let deltaCount = 0
+  for (const sid of allScribeSessions) {
+    if (existsSync(join(deltasDir, `${sid}.json`))) deltaCount++
+    if (existsSync(join(deltasDir, 'audited', `${sid}.json`))) deltaCount++
+  }
+
+  const scribeState = hasJob('scribe')
+  const auditorState = hasJob('auditor')
+  const librarianState = hasJob('librarian')
+  const dreamerState = hasJob('dreamer')
+
+  const hasAuditedDeltas = (() => {
+    for (const sid of allScribeSessions) {
+      if (existsSync(join(deltasDir, 'audited', `${sid}.json`))) return true
+    }
+    return false
+  })()
+
+  return [
+    {
+      stage: 'scribe',
+      label: 'Scribe',
+      current: bufferCount,
+      threshold: SCRIBE_INTERVAL,
+      remaining: bufferCount >= SCRIBE_INTERVAL ? 0 : SCRIBE_INTERVAL - bufferCount,
+      status: scribeState
+        ? scribeState
+        : bufferCount >= SCRIBE_INTERVAL
+          ? 'ready'
+          : 'counting',
+      detail: scribeState
+        ? `Scribe is ${scribeState}.`
+        : bufferCount >= SCRIBE_INTERVAL
+          ? 'Buffer threshold reached. Ready to snapshot.'
+          : `${bufferCount}/${SCRIBE_INTERVAL} messages buffered. ${SCRIBE_INTERVAL - bufferCount} more to trigger scribe.`,
+    },
+    {
+      stage: 'auditor',
+      label: 'Auditor',
+      current: scribesSinceAuditor,
+      threshold: AUDITOR_SCRIBE_THRESHOLD,
+      remaining: scribesSinceAuditor >= AUDITOR_SCRIBE_THRESHOLD ? 0 : AUDITOR_SCRIBE_THRESHOLD - scribesSinceAuditor,
+      status: auditorState
+        ? auditorState
+        : scribesSinceAuditor >= AUDITOR_SCRIBE_THRESHOLD && deltaCount > 0
+          ? 'ready'
+          : scribesSinceAuditor > 0
+            ? 'counting'
+            : 'idle',
+      detail: auditorState
+        ? `Auditor is ${auditorState}.`
+        : scribesSinceAuditor >= AUDITOR_SCRIBE_THRESHOLD
+          ? `${scribesSinceAuditor} scribes accumulated. Ready to audit.`
+          : scribesSinceAuditor > 0
+            ? `${scribesSinceAuditor}/${AUDITOR_SCRIBE_THRESHOLD} scribes since last audit. ${AUDITOR_SCRIBE_THRESHOLD - scribesSinceAuditor} more needed.`
+            : 'Waiting for scribe deltas to accumulate.',
+    },
+    {
+      stage: 'librarian',
+      label: 'Librarian',
+      current: hasAuditedDeltas ? 1 : 0,
+      threshold: 1,
+      remaining: hasAuditedDeltas ? 0 : 1,
+      status: librarianState
+        ? librarianState
+        : auditorState
+          ? 'waiting'
+          : hasAuditedDeltas
+            ? 'ready'
+            : 'idle',
+      detail: librarianState
+        ? `Librarian is ${librarianState}.`
+        : auditorState
+          ? 'Waiting for auditor to finish.'
+          : hasAuditedDeltas
+            ? 'Audited deltas ready. Librarian can run.'
+            : 'No audited deltas yet.',
+    },
+    {
+      stage: 'dreamer',
+      label: 'Dreamer',
+      current: jobs.done.filter(j =>
+        j.type === 'librarian' && (j.payload?.project === project || j.payload?.project === slug)
+      ).length,
+      threshold: null,
+      remaining: null,
+      status: dreamerState
+        ? dreamerState
+        : librarianState
+          ? 'waiting'
+          : 'idle',
+      detail: dreamerState
+        ? `Dreamer is ${dreamerState}.`
+        : librarianState
+          ? 'Waiting for librarian to finish.'
+          : 'Runs after librarian completes.',
+    },
+  ]
+}
+
 function collectWarnings(graphRoot = getGraphRoot(), nodeCount?: number): string[] {
   const { map } = getPaths(graphRoot)
   const warnings: string[] = []
-  const actualNodeCount = nodeCount ?? countMarkdownFiles(getPaths(graphRoot).nodes)
+  const actualNodeCount = nodeCount ?? countActiveMarkdownFiles(getPaths(graphRoot).nodes)
 
   if (existsSync(map)) {
     const mapTokens = Math.ceil(readFileSync(map, 'utf-8').length / 4)
@@ -1029,37 +1245,108 @@ function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4)
 }
 
-function getArtifactInfo(graphRoot = getGraphRoot()) {
+function formatRecentSessionLogs(graphRoot: string, project: string): string {
+  const filePath = join(getPaths(graphRoot).v3Sessions, `${sanitizeProjectSlug(project)}.jsonl`)
+  if (!project || project === 'global' || !existsSync(filePath)) return ''
+
+  try {
+    const logs = readFileSync(filePath, 'utf-8')
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line))
+
+    if (logs.length === 0) return ''
+    const log = logs[logs.length - 1]
+
+    const date = typeof log.timestamp === 'string' ? log.timestamp.slice(0, 10) : 'unknown'
+    const lines = ['## Last Session', '', `**${date}**`]
+    if (Array.isArray(log.openThreads) && log.openThreads.length > 0) lines.push(`Open: ${log.openThreads.join('; ')}`)
+    if (log.nextSessionShould) lines.push(`Next: ${log.nextSessionShould}`)
+
+    return lines.join('\n').trim()
+  } catch {
+    return ''
+  }
+}
+
+function readPickupBlock(graphRoot: string, project: string): string {
+  if (!project || project === 'global') return ''
+  const statePath = join(getPaths(graphRoot).workingProjects, `${sanitizeProjectSlug(project)}.state.json`)
+  if (!existsSync(statePath)) return ''
+
+  try {
+    const state = safeJsonParse(statePath)
+    const latest = Array.isArray(state?.sessions) ? state.sessions[0] : null
+    const items = Array.isArray(latest?.nextPickup) ? latest.nextPickup.slice(0, 3) : []
+    if (items.length === 0) return ''
+    return ['## Pick Up', '', ...items.map((item: string) => `- ${item}`)].join('\n')
+  } catch {
+    return ''
+  }
+}
+
+function buildGuardrailsBlock(graphRoot: string, project: string): string {
+  const antiPatterns = readIndex(graphRoot)
+    .filter((entry: any) => entry.anti_pattern || entry.category === 'anti-patterns')
+    .filter((entry: any) => !entry.project || project === 'global' || entry.project === project)
+    .slice(0, 8)
+
+  if (antiPatterns.length === 0) return ''
+  return ['## Guardrails', '', ...antiPatterns.map((entry: any) => `- ${entry.gist || entry.path}`)].join('\n')
+}
+
+function getArtifactInfo(graphRoot = getGraphRoot(), projectOverride?: string) {
   const paths = getPaths(graphRoot)
-  const activeProject = readActiveProject(graphRoot)?.name || 'global'
-  const projectWorkingPath = getProjectWorkingPath(graphRoot, activeProject)
+  const activeProject = projectOverride || readActiveProject(graphRoot)?.name || 'global'
+  const projectWhisperPath = activeProject !== 'global' ? join(paths.lenses, sanitizeProjectSlug(activeProject), 'whisper.txt') : null
+  const sessionLog = formatRecentSessionLogs(graphRoot, activeProject)
+  const pickupBlock = readPickupBlock(graphRoot, activeProject)
+  const guardrails = buildGuardrailsBlock(graphRoot, activeProject)
   const layers: Array<{
     id: StartupLayerId
     label: string
     subtitle: string
-    owner: 'librarian' | 'dreamer'
+    owner: 'librarian' | 'dreamer' | 'compressor' | 'observer'
     injected: boolean
     updatedAt: string | null
     tokens: number
     content: string
   }> = [
-    { id: 'priors', label: 'PRIORS.md', subtitle: 'Behavioral priors', owner: 'librarian', injected: true, updatedAt: null, tokens: 0, content: existsSync(paths.priors) ? readFileSync(paths.priors, 'utf-8') : '' },
-    { id: 'soma', label: 'SOMA.md', subtitle: 'Salience and engagement', owner: 'librarian', injected: true, updatedAt: null, tokens: 0, content: existsSync(paths.soma) ? readFileSync(paths.soma, 'utf-8') : '' },
-    { id: 'map', label: 'MAP.md', subtitle: 'Knowledge map', owner: 'librarian', injected: true, updatedAt: null, tokens: 0, content: existsSync(paths.map) ? readFileSync(paths.map, 'utf-8') : '' },
-    { id: 'working_global', label: 'WORKING Global', subtitle: 'Cross-project carryover', owner: 'librarian', injected: true, updatedAt: null, tokens: 0, content: existsSync(paths.workingGlobal) ? readFileSync(paths.workingGlobal, 'utf-8') : '' },
-    { id: 'dreams', label: 'DREAMS.md', subtitle: 'Speculative fragments', owner: 'dreamer', injected: true, updatedAt: null, tokens: 0, content: existsSync(paths.dreamsContext) ? readFileSync(paths.dreamsContext, 'utf-8') : '' },
+    { id: 'global_whisper', label: 'Global Whisper', subtitle: 'Compressed global mental model', owner: 'compressor', injected: true, updatedAt: null, tokens: 0, content: existsSync(paths.globalWhisper) ? readFileSync(paths.globalWhisper, 'utf-8') : '' },
+    { id: 'guardrails', label: 'Guardrails', subtitle: 'Anti-patterns from graph index', owner: 'compressor', injected: Boolean(guardrails), updatedAt: null, tokens: 0, content: guardrails },
   ]
 
-  if (projectWorkingPath) {
-    layers.splice(4, 0, {
-      id: 'working_project',
-      label: `WORKING ${activeProject}`,
-      subtitle: 'Project-specific working memory',
-      owner: 'librarian',
+  if (projectWhisperPath) {
+    layers.push({
+      id: 'project_whisper',
+      label: `Project Whisper`,
+      subtitle: activeProject,
+      owner: 'compressor',
       injected: true,
       updatedAt: null,
       tokens: 0,
-      content: existsSync(projectWorkingPath) ? readFileSync(projectWorkingPath, 'utf-8') : '',
+      content: existsSync(projectWhisperPath) ? readFileSync(projectWhisperPath, 'utf-8') : '',
+    })
+    layers.push({
+      id: 'session_log',
+      label: 'Recent Sessions',
+      subtitle: 'Last three compressed session logs',
+      owner: 'observer',
+      injected: Boolean(sessionLog),
+      updatedAt: null,
+      tokens: 0,
+      content: sessionLog,
+    })
+    layers.push({
+      id: 'working_project',
+      label: 'Pick Up',
+      subtitle: 'Next-session project handoff',
+      owner: 'observer',
+      injected: Boolean(pickupBlock),
+      updatedAt: null,
+      tokens: 0,
+      content: pickupBlock,
     })
   }
 
@@ -1069,10 +1356,14 @@ function getArtifactInfo(graphRoot = getGraphRoot()) {
       soma: paths.soma,
       map: paths.map,
       working_global: paths.workingGlobal,
-      working_project: projectWorkingPath,
+      working_project: activeProject !== 'global' ? join(paths.workingProjects, `${sanitizeProjectSlug(activeProject)}.state.json`) : '',
       dreams: paths.dreamsContext,
+      global_whisper: paths.globalWhisper,
+      project_whisper: projectWhisperPath,
+      session_log: activeProject !== 'global' ? join(paths.v3Sessions, `${sanitizeProjectSlug(activeProject)}.jsonl`) : '',
+      guardrails: paths.index,
     }[layer.id] || ''
-    if (existsSync(filePath)) {
+    if (filePath && existsSync(filePath)) {
       layer.updatedAt = statSync(filePath).mtime.toISOString()
       layer.tokens = estimateTokens(layer.content)
     }
@@ -1081,8 +1372,8 @@ function getArtifactInfo(graphRoot = getGraphRoot()) {
   return layers
 }
 
-function getPinnedNodes(graphRoot = getGraphRoot()) {
-  const activeProject = readActiveProject(graphRoot)?.name || 'global'
+function getPinnedNodes(graphRoot = getGraphRoot(), projectOverride?: string) {
+  const activeProject = projectOverride || readActiveProject(graphRoot)?.name || 'global'
   const index = readIndex(graphRoot)
   const indexedPinned = index
     .filter((entry: any) => entry.pinned)
@@ -1352,9 +1643,11 @@ app.put('/api/node/:path(*)', (req, res) => {
     if (req.body.gist !== undefined) fm.gist = req.body.gist
     if (req.body.confidence !== undefined) fm.confidence = req.body.confidence
     if (req.body.tags !== undefined) fm.tags = req.body.tags
+    fm.updated = new Date().toISOString()
 
     const updated = matter.stringify(body, fm)
     writeFileSync(fullPath, updated)
+    updateNodeIndexes(graphRoot, req.params.path, fm)
 
     const node = readNodeFileForGraph(graphRoot, req.params.path)
     res.json(node)
@@ -1367,7 +1660,7 @@ app.put('/api/node/:path(*)', (req, res) => {
 app.get('/api/status', (_req, res) => {
   try {
     const graphRoot = getGraphRoot()
-    const nodeCount = countMarkdownFiles(getPaths(graphRoot).nodes)
+    const nodeCount = countActiveMarkdownFiles(getPaths(graphRoot).nodes)
     const jobs = readAllJobs(graphRoot)
     const runtime = readRuntimeStatus(graphRoot)
     const activeProject = readActiveProject(graphRoot)
@@ -1378,7 +1671,7 @@ app.get('/api/status', (_req, res) => {
       activeProject: activeProject?.name ?? 'global',
       activeProjects: listAllActiveProjects(graphRoot),
       nodeCount,
-      archiveCount: countMarkdownFiles(getPaths(graphRoot).archive),
+      archiveCount: countArchiveMarkdownFiles(graphRoot),
       bufferCount: readBufferCount(graphRoot),
       bufferByProject: readBufferCountsByProject(graphRoot),
       pendingDreams: countPendingDreams(graphRoot),
@@ -1403,8 +1696,8 @@ app.get('/api/health', (_req, res) => {
   try {
     const graphRoot = getGraphRoot()
     const paths = getPaths(graphRoot)
-    const nodeCount = countMarkdownFiles(paths.nodes)
-    const archiveCount = countMarkdownFiles(paths.archive)
+    const nodeCount = countActiveMarkdownFiles(paths.nodes)
+    const archiveCount = countArchiveMarkdownFiles(graphRoot)
 
     const index = readIndex()
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000
@@ -1414,11 +1707,20 @@ app.get('/api/health', (_req, res) => {
     const edgeSources = new Set<string>()
     const edgeTargets = new Set<string>()
 
-    const graphData = readGraphForDashboard(graphRoot)
-    for (const el of graphData.elements) {
-      if (el.group === 'edges') {
-        edgeSources.add(el.data.source)
-        edgeTargets.add(el.data.target)
+    for (const node of index) {
+      for (const edge of node.edges ?? []) {
+        const target = typeof edge === 'string' ? edge : edge.target
+        if (target) {
+          edgeSources.add(node.path)
+          edgeTargets.add(target)
+        }
+      }
+      for (const edge of node.anti_edges ?? []) {
+        const target = typeof edge === 'string' ? edge : edge.target
+        if (target) {
+          edgeSources.add(node.path)
+          edgeTargets.add(target)
+        }
       }
     }
     const allConnected = new Set([...edgeSources, ...edgeTargets])
@@ -1433,37 +1735,22 @@ app.get('/api/health', (_req, res) => {
       if (!allConnected.has(entry.path)) orphanCount++
     }
 
-    let mapTokens = 0
-    if (existsSync(paths.map)) {
-      mapTokens = Math.ceil(readFileSync(paths.map, 'utf-8').length / 4)
-    }
-    const mapBudget = 12000
+    const globalWhisperTokens = existsSync(paths.globalWhisper) ? estimateTokens(readFileSync(paths.globalWhisper, 'utf-8')) : 0
+    const activeProject = readActiveProject(graphRoot)?.name || 'global'
+    const projectWhisperPath = activeProject !== 'global' ? join(paths.lenses, sanitizeProjectSlug(activeProject), 'whisper.txt') : ''
+    const projectWhisperTokens = projectWhisperPath && existsSync(projectWhisperPath) ? estimateTokens(readFileSync(projectWhisperPath, 'utf-8')) : 0
+    const sessionLogTokens = estimateTokens(formatRecentSessionLogs(graphRoot, activeProject))
+    const guardrailTokens = estimateTokens(buildGuardrailsBlock(graphRoot, activeProject))
+    const mapTokens = globalWhisperTokens
+    const mapBudget = 1100
     const mapUsage = mapTokens / mapBudget
 
-    let priorsTokens = 0
-    if (existsSync(paths.priors)) {
-      priorsTokens = Math.ceil(readFileSync(paths.priors, 'utf-8').length / 4)
-    }
-
-    let somaTokens = 0
-    if (existsSync(paths.soma)) {
-      somaTokens = Math.ceil(readFileSync(paths.soma, 'utf-8').length / 4)
-    }
-
-    let dreamsTokens = 0
-    if (existsSync(paths.dreamsContext)) {
-      dreamsTokens = Math.ceil(readFileSync(paths.dreamsContext, 'utf-8').length / 4)
-    }
+    const priorsTokens = globalWhisperTokens
+    const somaTokens = guardrailTokens
+    const dreamsTokens = sessionLogTokens
 
     let workingTokens = 0
-    const workingDir = join(graphRoot, 'working')
-    if (existsSync(workingDir)) {
-      for (const f of readdirSync(workingDir)) {
-        if (f.endsWith('.md')) {
-          workingTokens += Math.ceil(readFileSync(join(workingDir, f), 'utf-8').length / 4)
-        }
-      }
-    }
+    workingTokens = projectWhisperTokens
 
     let pinnedTokens = 0
     let pinnedCount = 0
@@ -1477,8 +1764,8 @@ app.get('/api/health', (_req, res) => {
       }
     }
 
-    const totalInjectionTokens = priorsTokens + mapTokens + somaTokens + dreamsTokens + workingTokens + pinnedTokens
-    const injectionBudget = 15000
+    const totalInjectionTokens = globalWhisperTokens + guardrailTokens + projectWhisperTokens + sessionLogTokens
+    const injectionBudget = 1100
 
     const topCategory = Object.entries(categories).sort((a, b) => b[1] - a[1])[0]
     const balanceRatio = topCategory ? topCategory[1] / Math.max(nodeCount, 1) : 0
@@ -1512,8 +1799,8 @@ app.get('/api/health', (_req, res) => {
       (staleCount === 0 ? 15 : Math.max(0, 15 - (staleCount / nodeCount) * 30)) +
       (orphanCount === 0 ? 10 : Math.max(0, 10 - (orphanCount / nodeCount) * 20)) +
       (mapUsage < 0.8 ? 10 : Math.max(0, 10 - (mapUsage - 0.8) * 100)) +
-      (priorsTokens < 1500 ? 15 : Math.max(0, 15 - (priorsTokens - 1500) / 200)) +
-      (pinnedTokens < 3000 ? 15 : Math.max(0, 15 - (pinnedTokens - 3000) / 500)) +
+      (globalWhisperTokens < 500 ? 15 : Math.max(0, 15 - (globalWhisperTokens - 500) / 100)) +
+      (projectWhisperTokens < 600 ? 15 : Math.max(0, 15 - (projectWhisperTokens - 600) / 100)) +
       (lowConfidenceCount / Math.max(nodeCount, 1) < 0.2 ? 10 : Math.max(0, 10 - (lowConfidenceCount / Math.max(nodeCount, 1)) * 50)) +
       (totalInjectionTokens < injectionBudget ? 10 : 0)
     )
@@ -1533,19 +1820,19 @@ app.get('/api/health', (_req, res) => {
       lowConfidenceRatio: nodeCount > 0 ? Math.round((lowConfidenceCount / nodeCount) * 100) : 0,
       pipelineStats,
       tokenAccounting: {
-        priors: priorsTokens,
-        priorsBudget: 1500,
+        priors: globalWhisperTokens,
+        priorsBudget: 400,
         map: mapTokens,
         mapBudget,
-        soma: somaTokens,
-        somaBudget: 800,
-        dreams: dreamsTokens,
-        dreamsBudget: 400,
-        working: workingTokens,
-        workingBudget: 2000,
-        pinned: pinnedTokens,
+        soma: guardrailTokens,
+        somaBudget: 150,
+        dreams: sessionLogTokens,
+        dreamsBudget: 200,
+        working: projectWhisperTokens,
+        workingBudget: 500,
+        pinned: 0,
         pinnedCount,
-        pinnedBudget: 3000,
+        pinnedBudget: 0,
         total: totalInjectionTokens,
         budget: injectionBudget,
         overBudget: totalInjectionTokens > injectionBudget,
@@ -1561,13 +1848,15 @@ app.get('/api/health', (_req, res) => {
 app.get('/api/startup-context', (_req, res) => {
   try {
     const graphRoot = getGraphRoot()
-    const layers = getArtifactInfo(graphRoot)
-    const pinnedNodes = getPinnedNodes(graphRoot)
+    const project = typeof _req.query.project === 'string' && _req.query.project ? _req.query.project : undefined
+    const activeProject = project || readActiveProject(graphRoot)?.name || 'global'
+    const layers = getArtifactInfo(graphRoot, activeProject)
+    const pinnedNodes = getPinnedNodes(graphRoot, activeProject)
     const totalTokens = layers.reduce((sum, layer) => sum + layer.tokens, 0) + pinnedNodes.reduce((sum, node) => sum + node.tokens, 0)
 
     res.json({
       graphRoot,
-      activeProject: readActiveProject(graphRoot)?.name || 'global',
+      activeProject,
       layers,
       pinnedNodes,
       allPinnedNodeCount: countAllPinnedNodes(graphRoot),
@@ -1761,8 +2050,53 @@ app.post('/api/dreams/:bucket/:filename/archive', (req, res) => {
 
 app.get('/api/archive', (_req, res) => {
   try {
-    const archiveIndex = safeJsonParse(getPaths().archiveIndex)
-    res.json(archiveIndex ?? [])
+    const paths = getPaths()
+    const archiveIndex = safeJsonParse(paths.archiveIndex)
+    if (Array.isArray(archiveIndex)) {
+      const legacyArchiveEntries = [
+        ...walkNodeFiles(join(paths.nodes, '.archive')),
+        ...walkNodeFiles(join(paths.nodes, 'archive')),
+      ].map(({ nodePath, filePath }) => {
+        try {
+          const raw = readFileSync(filePath, 'utf-8')
+          const parsed = matter(raw)
+          return {
+            path: nodePath,
+            gist: parsed.data.gist || parsed.data.title || nodePath,
+            tags: parsed.data.tags || [],
+            confidence: parsed.data.confidence ?? 0,
+            archived_reason: parsed.data.archived_reason || parsed.data.archive_reason || 'legacy archive under nodes/',
+            archived_date: parsed.data.archived_date || parsed.data.archivedAt || null,
+          }
+        } catch {
+          return null
+        }
+      }).filter(Boolean)
+      res.json([...archiveIndex, ...legacyArchiveEntries])
+      return
+    }
+
+    const entries = [
+      ...walkNodeFiles(paths.archive),
+      ...walkNodeFiles(join(paths.nodes, '.archive')),
+      ...walkNodeFiles(join(paths.nodes, 'archive')),
+    ].map(({ nodePath, filePath }) => {
+      try {
+        const raw = readFileSync(filePath, 'utf-8')
+        const parsed = matter(raw)
+        return {
+          path: nodePath,
+          gist: parsed.data.gist || parsed.data.title || nodePath,
+          tags: parsed.data.tags || [],
+          confidence: parsed.data.confidence ?? 0,
+          archived_reason: parsed.data.archived_reason || parsed.data.archive_reason || '',
+          archived_date: parsed.data.archived_date || parsed.data.archivedAt || null,
+        }
+      } catch {
+        return null
+      }
+    }).filter(Boolean)
+    res.json(entries)
   } catch {
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -1824,13 +2158,21 @@ app.get('/api/skills/:name/content', (req, res) => {
     })
     if (!manifestFile) { res.status(404).json({ error: 'Skill not found' }); return }
     const manifest = JSON.parse(readFileSync(join(dir, manifestFile), 'utf-8'))
-    const cmdPath = manifest.files?.claude_command || manifest.files?.opencode_command
-    if (!cmdPath) { res.status(404).json({ error: 'No command file path' }); return }
-    const projectRoot = manifest.project_root
-    if (!projectRoot) { res.status(404).json({ error: 'No project root' }); return }
-    const fullPath = join(projectRoot, cmdPath)
-    if (!existsSync(fullPath)) { res.status(404).json({ error: 'Command file not found on disk' }); return }
-    res.json({ content: readFileSync(fullPath, 'utf-8'), manifest })
+    const contentPath = manifest.canonical_content_path
+      ? join(getPaths().graphRoot, manifest.canonical_content_path)
+      : null
+    if (!contentPath || !existsSync(contentPath)) {
+      const legacyPath = manifest.files?.claude_command || manifest.files?.opencode_command
+      if (legacyPath && manifest.project_root) {
+        const fullPath = join(manifest.project_root, legacyPath)
+        if (existsSync(fullPath)) {
+          res.json({ content: readFileSync(fullPath, 'utf-8'), manifest })
+          return
+        }
+      }
+      res.status(404).json({ error: 'No skill content found' }); return
+    }
+    res.json({ content: readFileSync(contentPath, 'utf-8'), manifest })
   } catch (err) {
     res.status(500).json({ error: 'Internal server error' })
   }
@@ -1853,6 +2195,16 @@ app.get('/api/pipeline', (_req, res) => {
     res.json(listPipelineJobs())
   } catch (err) {
     console.error('Error in /api/pipeline:', err)
+    res.status(500).json({ error: 'Internal server error' })
+  }
+})
+
+app.get('/api/pipeline-progress/:project', (req, res) => {
+  try {
+    const project = decodeURIComponent(req.params.project)
+    res.json(getProjectPipelineProgress(getGraphRoot(), project))
+  } catch (err) {
+    console.error('Error in /api/pipeline-progress:', err)
     res.status(500).json({ error: 'Internal server error' })
   }
 })
@@ -1904,7 +2256,7 @@ app.get('/api/events', (_req, res) => {
   _req.on('close', () => clients.delete(res))
 })
 
-// ── v3 API Endpoints ──────────────────────────────────────────────────────────
+// ── Mental Model Endpoints ─────────────────────────────────────────────────────
 
 app.get('/api/projects', (_req, res) => {
   try {
@@ -1964,7 +2316,7 @@ app.get('/api/projects', (_req, res) => {
   }
 })
 
-app.get('/api/v3/model', (_req, res) => {
+app.get('/api/model', (_req, res) => {
   const graphRoot = getGraphRoot()
   const modelPath = join(graphRoot, 'mind/model.json')
   if (!existsSync(modelPath)) {
@@ -1972,13 +2324,33 @@ app.get('/api/v3/model', (_req, res) => {
     return
   }
   try {
-    res.json(JSON.parse(readFileSync(modelPath, 'utf-8')))
+    const parsed = JSON.parse(readFileSync(modelPath, 'utf-8'))
+    const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
+    let observationCount = 0
+    if (existsSync(globalObsFile)) {
+      observationCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+        try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+      }, 0)
+    }
+    const lensesDir = join(graphRoot, 'lenses')
+    if (existsSync(lensesDir)) {
+      for (const entry of readdirSync(lensesDir, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.name.startsWith('_')) continue
+        const obsFile = join(lensesDir, entry.name, 'observations.jsonl')
+        if (existsSync(obsFile)) {
+          observationCount += readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+            try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+          }, 0)
+        }
+      }
+    }
+    res.json({ ...parsed, observationCount })
   } catch {
     res.json({ model: null })
   }
 })
 
-app.get('/api/v3/whisper', (_req, res) => {
+app.get('/api/whisper', (_req, res) => {
   const graphRoot = getGraphRoot()
   const whisperPath = join(graphRoot, 'mind/whisper.txt')
   if (!existsSync(whisperPath)) {
@@ -1989,7 +2361,7 @@ app.get('/api/v3/whisper', (_req, res) => {
   res.json({ whisper: text, tokens: Math.ceil(text.length / 4) })
 })
 
-app.get('/api/v3/lenses', (_req, res) => {
+app.get('/api/lenses', (_req, res) => {
   const graphRoot = getGraphRoot()
   const lensesDir = join(graphRoot, 'lenses')
   if (!existsSync(lensesDir)) {
@@ -2026,7 +2398,9 @@ app.get('/api/v3/lenses', (_req, res) => {
 
     if (existsSync(obsFile)) {
       const content = readFileSync(obsFile, 'utf-8').trim()
-      observationCount = content.split('\n').filter(Boolean).length
+      observationCount = content.split('\n').filter(Boolean).reduce((count: number, line: string) => {
+        try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+      }, 0)
     }
 
     let whisper: string | undefined
@@ -2047,9 +2421,9 @@ app.get('/api/v3/lenses', (_req, res) => {
   res.json(lenses)
 })
 
-app.get('/api/v3/lens/:project', (req, res) => {
+app.get('/api/lens/:project', (req, res) => {
   const graphRoot = getGraphRoot()
-  const lensDir = join(graphRoot, 'lenses', req.params.project)
+  const lensDir = join(graphRoot, 'lenses', sanitizeProjectSlug(req.params.project))
   if (!existsSync(lensDir)) {
     res.status(404).json({ error: 'Lens not found' })
     return
@@ -2080,9 +2454,9 @@ app.get('/api/v3/lens/:project', (req, res) => {
   })
 })
 
-app.get('/api/v3/sessions/:project', (req, res) => {
+app.get('/api/sessions/:project', (req, res) => {
   const graphRoot = getGraphRoot()
-  const sessionsFile = join(graphRoot, 'sessions', `${req.params.project}.jsonl`)
+  const sessionsFile = join(graphRoot, 'sessions', `${sanitizeProjectSlug(req.params.project)}.jsonl`)
   if (!existsSync(sessionsFile)) {
     res.json([])
     return
@@ -2097,18 +2471,15 @@ app.get('/api/v3/sessions/:project', (req, res) => {
   }
 })
 
-app.get('/api/v3/observations', (_req, res) => {
+app.get('/api/observations', (_req, res) => {
   const graphRoot = getGraphRoot()
-  const obsDir = join(graphRoot, '.pipeline', 'observations')
-  if (!existsSync(obsDir)) {
-    res.json({ global: 0, projects: {} })
-    return
-  }
 
   const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
   let globalCount = 0
   if (existsSync(globalObsFile)) {
-    globalCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).length
+    globalCount = readFileSync(globalObsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+      try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+    }, 0)
   }
 
   const projectObs: Record<string, number> = {}
@@ -2118,7 +2489,9 @@ app.get('/api/v3/observations', (_req, res) => {
       if (!entry.isDirectory() || entry.name.startsWith('_')) continue
       const obsFile = join(lensesDir, entry.name, 'observations.jsonl')
       if (existsSync(obsFile)) {
-        projectObs[entry.name] = readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).length
+        projectObs[entry.name] = readFileSync(obsFile, 'utf-8').trim().split('\n').filter(Boolean).reduce((count: number, line: string) => {
+          try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+        }, 0)
       }
     }
   }
@@ -2126,15 +2499,14 @@ app.get('/api/v3/observations', (_req, res) => {
   res.json({ global: globalCount, projects: projectObs })
 })
 
-app.get('/api/v3/graph', (_req, res) => {
+app.get('/api/mind-graph', (_req, res) => {
   const graphRoot = getGraphRoot()
-  const indexPath = join(graphRoot, 'graph', '.index.json')
-  if (!existsSync(indexPath)) {
+  const index = readV3Index(graphRoot)
+  if (!index.entries || Object.keys(index.entries).length === 0) {
     res.json({ entries: {}, categories: {}, projects: {}, totalNodes: 0, antiPatterns: 0 })
     return
   }
   try {
-    const index = JSON.parse(readFileSync(indexPath, 'utf-8'))
     const entries = index.entries || {}
     const nodes = Object.values(entries) as Array<Record<string, unknown>>
 
@@ -2186,10 +2558,11 @@ app.get('/api/v3/graph', (_req, res) => {
   }
 })
 
-app.get('/api/v3/node/:path(*)', (req, res) => {
+app.get('/api/mind-node/:path(*)', (req, res) => {
   const graphRoot = getGraphRoot()
-  const nodePath = join(graphRoot, 'graph', `${req.params['path']}.md`)
-  if (!existsSync(nodePath)) {
+  const { nodes } = getPaths(graphRoot)
+  const nodePath = resolve(nodes, `${req.params['path']}.md`)
+  if (!nodePath.startsWith(nodes) || !existsSync(nodePath)) {
     res.status(404).json({ error: 'Node not found' })
     return
   }
@@ -2206,16 +2579,15 @@ app.get('/api/v3/node/:path(*)', (req, res) => {
   }
 })
 
-app.get('/api/v3/status', (_req, res) => {
+app.get('/api/mind-status', (_req, res) => {
   const graphRoot = getGraphRoot()
   const mindDir = join(graphRoot, 'mind')
   const hasMind = existsSync(mindDir) && existsSync(join(mindDir, 'whisper.txt'))
-  const indexPath = join(graphRoot, 'graph', '.index.json')
+  const index = readV3Index(graphRoot)
 
   let graphStats = { totalNodes: 0, antiPatterns: 0, categories: {} as Record<string, number>, projects: {} as Record<string, number> }
-  if (existsSync(indexPath)) {
+  if (index.entries && Object.keys(index.entries).length > 0) {
     try {
-      const index = JSON.parse(readFileSync(indexPath, 'utf-8'))
       const entries = Object.values(index.entries || {}) as Array<Record<string, unknown>>
       graphStats = {
         totalNodes: entries.length,
@@ -2234,7 +2606,7 @@ app.get('/api/v3/status', (_req, res) => {
   }
 
   res.json({
-    initialized: existsSync(join(graphRoot, 'graph')) || existsSync(join(graphRoot, 'MAP.md')),
+    initialized: existsSync(join(graphRoot, 'nodes')) || existsSync(join(graphRoot, 'MAP.md')),
     v3: {
       hasGlobalWhisper: hasMind,
       lensCount,
@@ -2242,14 +2614,14 @@ app.get('/api/v3/status', (_req, res) => {
     },
     v2: {
       hasMap: existsSync(join(graphRoot, 'MAP.md')),
-      nodeCount: existsSync(join(graphRoot, 'nodes')) ? countNodes(join(graphRoot, 'nodes')) : 0,
+      nodeCount: existsSync(join(graphRoot, 'nodes')) ? countActiveMarkdownFiles(join(graphRoot, 'nodes')) : 0,
     },
   })
 })
 
-app.get('/api/v3/active-sessions', (_req, res) => {
+app.get('/api/active-sessions', (_req, res) => {
   const graphRoot = getGraphRoot()
-  const bufferDir = join(graphRoot, 'buffer')
+  const bufferDir = getPaths(graphRoot).buffer
   const sessionsDir = join(graphRoot, '.sessions')
   if (!existsSync(bufferDir)) { res.json([]); return }
 
@@ -2289,7 +2661,7 @@ app.get('/api/v3/active-sessions', (_req, res) => {
   res.json(activeSessions)
 })
 
-app.get('/api/v3/pipeline', (_req, res) => {
+app.get('/api/mind-pipeline', (_req, res) => {
   const graphRoot = getGraphRoot()
   const jobsDir = join(graphRoot, '.jobs')
 
@@ -2341,10 +2713,25 @@ app.get('/api/v3/pipeline', (_req, res) => {
     .filter(j => Date.parse((j.completedAt as string) || '') > lastCompressorAt)
     .length
 
-  const obsDir = join(graphRoot, '.pipeline', 'observations')
   let pendingObservations = 0
-  if (existsSync(obsDir)) {
-    pendingObservations = readdirSync(obsDir).filter(f => f.endsWith('.json')).length
+  const globalObsFile = join(graphRoot, 'mind', 'observations.jsonl')
+  if (existsSync(globalObsFile)) {
+    const content = readFileSync(globalObsFile, 'utf-8').trim()
+    pendingObservations = content.split('\n').filter(Boolean).reduce((count: number, line: string) => {
+      try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+    }, 0)
+  }
+  const lensObsDir = join(graphRoot, 'lenses')
+  if (existsSync(lensObsDir)) {
+    for (const entry of readdirSync(lensObsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue
+      const lensObs = join(lensObsDir, entry.name, 'observations.jsonl')
+      if (!existsSync(lensObs)) continue
+      const content = readFileSync(lensObs, 'utf-8').trim()
+      pendingObservations += content.split('\n').filter(Boolean).reduce((count: number, line: string) => {
+        try { return JSON.parse(line).absorbed ? count : count + 1 } catch { return count + 1 }
+      }, 0)
+    }
   }
 
   res.json({

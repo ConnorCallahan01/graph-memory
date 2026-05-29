@@ -6,6 +6,7 @@ import {
   getProjectWorkingPath,
   getProjectWorkingStatePath,
   getProjectWorkingUpdatePath,
+  sanitizeProjectSlug,
 } from "./working-files.js";
 
 type DeltaKind =
@@ -832,4 +833,61 @@ export function updateProjectWorkingFromSession(opts: UpdateProjectWorkingOption
 
   saveProjectWorkingState(opts.project, state);
   fs.writeFileSync(getProjectWorkingPath(opts.project), renderProjectWorkingMarkdown(state));
+}
+
+export function addNotionPickupItem(project: string, item: string): void {
+  if (!project || project === "global") return;
+  ensureWorkingDirectories();
+
+  const resolvedProject = resolveProjectFromPartialName(project);
+  if (!resolvedProject) return;
+
+  const statePath = getProjectWorkingStatePath(resolvedProject);
+  if (!fs.existsSync(statePath)) return;
+
+  try {
+    const state = loadProjectWorkingState(resolvedProject);
+    if (state.sessions.length === 0) return;
+
+    const latest = state.sessions[0];
+    if (!latest.nextPickup) latest.nextPickup = [];
+
+    const normalized = normalizeBullet(item);
+    if (!normalized) return;
+
+    if (!latest.nextPickup.includes(normalized)) {
+      latest.nextPickup.push(normalized);
+      if (latest.nextPickup.length > 8) {
+        const agentItems = latest.nextPickup.filter(i => !i.startsWith("[Notion]"));
+        const notionItems = latest.nextPickup.filter(i => i.startsWith("[Notion]")).slice(-3);
+        latest.nextPickup = [...agentItems.slice(-5), ...notionItems];
+      }
+    }
+
+    state.updatedAt = nowIso();
+    saveProjectWorkingState(resolvedProject, state);
+    fs.writeFileSync(getProjectWorkingPath(resolvedProject), renderProjectWorkingMarkdown(state));
+  } catch {
+    // Non-critical
+  }
+}
+
+function resolveProjectFromPartialName(partial: string): string | null {
+  const sanitized = sanitizeProjectSlug(partial);
+  const directPath = getProjectWorkingStatePath(sanitized);
+  if (fs.existsSync(directPath)) return sanitized;
+
+  const lower = partial.toLowerCase().replace(/[^a-z0-9]/g, "");
+  const projectsDir = CONFIG.paths.workingProjects;
+  if (!fs.existsSync(projectsDir)) return null;
+
+  for (const entry of fs.readdirSync(projectsDir)) {
+    if (!entry.endsWith(".state.json")) continue;
+    const slug = entry.replace(".state.json", "");
+    const normalized = slug.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (normalized.includes(lower) || lower.includes(normalized)) {
+      return slug;
+    }
+  }
+  return null;
 }

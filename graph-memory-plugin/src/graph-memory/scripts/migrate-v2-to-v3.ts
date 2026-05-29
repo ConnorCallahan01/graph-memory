@@ -6,8 +6,9 @@
  *   - Project models (lenses/{project}/model.json + whisper.txt)
  *   - Graph index (graph/.index.json)
  *
- * Copies node files to graph/ for v3 Layer 4 access.
- * Preserves existing archive/ directory and all v2 paths.
+ * v3 Layer 4 now uses the existing nodes/ directory directly. The migration
+ * preserves existing node and archive paths and only builds the compressed
+ * mental-model layers plus the v3 lookup index.
  *
  * Usage:
  *   npx tsx src/graph-memory/scripts/migrate-v2-to-v3.ts           # dry run
@@ -26,7 +27,7 @@ import { writeWhisper, enforceWhisperCap, estimateTokens } from "../mind/whisper
 import { GlobalModel, GlobalModelFile } from "../mind/types.js";
 import { ensureLens, writeModel as writeProjectModel, writeWhisper as writeProjectWhisper, readModel as readProjectModel, listActiveLenses } from "../lenses/index.js";
 import { ProjectModel, ProjectModelFile } from "../lenses/types.js";
-import { rebuildV3Index, addEntryToIndex, GraphIndexEntry, entryFromFile } from "../pipeline/graph-index-v3.js";
+import { rebuildV3Index as rebuildGraphIndex } from "../pipeline/graph-index.js";
 import { repairYamlFrontmatter, tryParseWithRepair } from "../pipeline/yaml-repair.js";
 
 interface MigratedNode {
@@ -48,7 +49,7 @@ interface MigratedNode {
 
 interface MigrationStats {
   nodesScanned: number;
-  nodesCopied: number;
+  nodesAvailable: number;
   globalModelEntries: number;
   projectLenses: string[];
   indexEntries: number;
@@ -259,52 +260,12 @@ export function buildProjectModels(nodes: MigratedNode[]): Map<string, { model: 
   return result;
 }
 
-function copyNodesToGraph(nodes: MigratedNode[], sourceDir: string, graphDir: string): number {
-  let copied = 0;
-  for (const node of nodes) {
-    const srcPath = path.join(sourceDir, node.nodePath + ".md");
-    if (!fs.existsSync(srcPath)) continue;
-
-    const destPath = path.join(graphDir, node.nodePath + ".md");
-    const destDir = path.dirname(destPath);
-    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-
-    fs.copyFileSync(srcPath, destPath);
-    copied++;
-  }
-  return copied;
-}
-
-function copyArchive(v2Archive: string, v3GraphArchive: string): number {
-  if (!fs.existsSync(v2Archive)) return 0;
-  if (!fs.existsSync(v3GraphArchive)) fs.mkdirSync(v3GraphArchive, { recursive: true });
-
-  let count = 0;
-  for (const entry of fs.readdirSync(v2Archive, { withFileTypes: true })) {
-    if (entry.isDirectory()) {
-      const srcDir = path.join(v2Archive, entry.name);
-      const destDir = path.join(v3GraphArchive, entry.name);
-      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
-      for (const file of fs.readdirSync(srcDir)) {
-        if (file.endsWith(".md")) {
-          fs.copyFileSync(path.join(srcDir, file), path.join(destDir, file));
-          count++;
-        }
-      }
-    } else if (entry.name.endsWith(".md")) {
-      fs.copyFileSync(path.join(v2Archive, entry.name), path.join(v3GraphArchive, entry.name));
-      count++;
-    }
-  }
-  return count;
-}
-
 function printStats(stats: MigrationStats, apply: boolean): void {
   const mode = apply ? "APPLY" : "DRY RUN";
   console.log(`\n=== Migration v2 → v3 (${mode}) ===`);
   console.log(`Graph root: ${CONFIG.paths.graphRoot}`);
   console.log(`Nodes scanned: ${stats.nodesScanned}`);
-  console.log(`Nodes copied to graph/: ${stats.nodesCopied}`);
+  console.log(`Nodes available for v3 graph layer: ${stats.nodesAvailable}`);
   console.log(`Global model entries: ${stats.globalModelEntries}`);
   console.log(`Project lenses created: ${stats.projectLenses.length}`);
   for (const proj of stats.projectLenses) {
@@ -330,9 +291,8 @@ async function main() {
   }
 
   const nodesDir = CONFIG.paths.nodes;
-  const graphDir = CONFIG.paths.v3Graph;
-  const mindDir = CONFIG.paths.v3Mind;
-  const lensesDir = CONFIG.paths.v3Lenses;
+  const mindDir = CONFIG.paths.mind;
+  const lensesDir = CONFIG.paths.lenses;
 
   if (!fs.existsSync(nodesDir)) {
     console.error(`No v2 nodes directory found at ${nodesDir}`);
@@ -341,7 +301,7 @@ async function main() {
 
   const stats: MigrationStats = {
     nodesScanned: 0,
-    nodesCopied: 0,
+    nodesAvailable: 0,
     globalModelEntries: 0,
     projectLenses: [],
     indexEntries: 0,
@@ -355,20 +315,9 @@ async function main() {
   stats.nodesScanned = nodes.length;
   console.log(`  Found ${nodes.length} active nodes`);
 
-  // Step 2: Copy nodes to graph/ directory
-  if (apply) {
-    console.log("Copying nodes to graph/...");
-    stats.nodesCopied = copyNodesToGraph(nodes, nodesDir, graphDir);
-    console.log(`  Copied ${stats.nodesCopied} nodes`);
-
-    // Copy archive
-    console.log("Copying archive...");
-    const archivedCount = copyArchive(CONFIG.paths.archive, CONFIG.paths.v3GraphArchive);
-    console.log(`  Copied ${archivedCount} archived nodes`);
-  } else {
-    stats.nodesCopied = nodes.length;
-    console.log(`  Would copy ${nodes.length} nodes to graph/`);
-  }
+  // Step 2: Reuse nodes/ directly for v3 Layer 4
+  stats.nodesAvailable = nodes.length;
+  console.log(`  Reusing ${nodes.length} nodes from nodes/ for v3 Layer 4`);
 
   // Step 3: Build global mental model
   console.log("Building global mental model...");
@@ -431,7 +380,7 @@ async function main() {
   stats.antiPatterns = antiPatterns.length;
 
   if (apply) {
-    const indexCount = rebuildV3Index();
+    const indexCount = rebuildGraphIndex();
     stats.indexEntries = indexCount;
     console.log(`  Indexed ${indexCount} nodes`);
   } else {
@@ -441,14 +390,14 @@ async function main() {
 
   // Step 6: Create sessions directory
   if (apply) {
-    const sessionsDir = CONFIG.paths.v3Sessions;
+    const sessionsDir = CONFIG.paths.sessions;
     if (!fs.existsSync(sessionsDir)) {
       fs.mkdirSync(sessionsDir, { recursive: true });
       console.log("Created sessions/ directory");
     }
 
     // Create pipeline observations directory
-    const obsDir = CONFIG.paths.v3PipelineObservations;
+    const obsDir = CONFIG.paths.pipelineObservations;
     if (!fs.existsSync(obsDir)) {
       fs.mkdirSync(obsDir, { recursive: true });
       console.log("Created .pipeline/observations/ directory");

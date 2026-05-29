@@ -16,6 +16,7 @@ export type WorkerProvider = "codex" | "claude" | "pi" | "opencode";
 export interface DockerRuntimeConfig {
   enabled: boolean;
   workerProvider: WorkerProvider;
+  workerModel?: string;
   image: string;
   containerName: string;
   authVolume: string;
@@ -75,8 +76,8 @@ function defaultDockerConfig(graphRoot: string): DockerRuntimeConfig {
     authVolume: `graph-memory-auth-${suffix}`,
     graphRootInContainer: "/graph-memory",
     authPathInContainer: "/graph-memory-auth",
-    memoryLimit: "2g",
-    cpuLimit: "2.0",
+    memoryLimit: "6g",
+    cpuLimit: "6.0",
     repoMounts: [],
   };
 }
@@ -231,6 +232,34 @@ function getCodexAuthState(runtime: GraphMemoryRuntimeConfig, dockerState: Recor
   };
 }
 
+function getOpenCodeAuthState(runtime: GraphMemoryRuntimeConfig, dockerState: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!dockerState || dockerState.available !== true || dockerState.present !== true || dockerState.Running !== true) {
+    return null;
+  }
+
+  const auth = runCommand("docker", [
+    "exec",
+    "-e", `HOME=${runtime.docker.authPathInContainer}`,
+    runtime.docker.containerName,
+    "bash",
+    "-lc",
+    'cat "$HOME/.local/share/opencode/auth.json" 2>/dev/null || for f in "$HOME/.config/opencode/config.json" "$HOME/.config/opencode/opencode.json" "$HOME/.config/opencode/opencode.jsonc"; do [ -f "$f" ] && cat "$f" && break; done',
+  ]);
+
+  if (!auth.ok || !auth.stdout) {
+    return {
+      ready: false,
+      error: auth.stderr || auth.error || "opencode auth unavailable",
+    };
+  }
+
+  const hasKey = /"key"|"token"|"apiKey"|"api_key"|"apiKeyId"/i.test(auth.stdout);
+  return {
+    ready: hasKey,
+    status: hasKey ? "opencode auth is ready" : "config exists but no provider credentials found",
+  };
+}
+
 export function getRuntimeStatus(): Record<string, unknown> {
   const runtime = loadRuntimeConfig();
   let daemonState: Record<string, unknown> | null = null;
@@ -244,6 +273,7 @@ export function getRuntimeStatus(): Record<string, unknown> {
 
   const dockerState = runtime.mode === "docker" ? getDockerState(runtime) : null;
   const codexAuth = runtime.mode === "docker" ? getCodexAuthState(runtime, dockerState) : null;
+  const opencodeAuth = runtime.mode === "docker" ? getOpenCodeAuthState(runtime, dockerState) : null;
 
   return {
     mode: runtime.mode,
@@ -251,6 +281,7 @@ export function getRuntimeStatus(): Record<string, unknown> {
     docker: runtime.mode === "docker" ? {
       enabled: runtime.docker.enabled,
       workerProvider: runtime.docker.workerProvider,
+      workerModel: runtime.docker.workerModel || null,
       image: runtime.docker.image,
       containerName: runtime.docker.containerName,
       authVolume: runtime.docker.authVolume,
@@ -261,6 +292,7 @@ export function getRuntimeStatus(): Record<string, unknown> {
       cpuLimit: runtime.docker.cpuLimit,
       state: dockerState,
       codexAuth,
+      opencodeAuth,
     } : null,
     daemonState,
     daemonLockPresent: fs.existsSync(CONFIG.paths.daemonLock),

@@ -26,6 +26,13 @@ interface GraphMemoryLocalConfig {
   externalInputs?: {
     enabled?: boolean;
   };
+  notionSync?: {
+    enabled?: boolean;
+    syncHourLocal?: number;
+    maxBatchSize?: number;
+    skipInbound?: boolean;
+    webhookSecret?: string;
+  };
 }
 
 /**
@@ -80,14 +87,11 @@ function createConfig() {
   const graphRoot = resolveGraphRoot();
   const local = loadLocalConfig(graphRoot);
   const inferredTimeZone = process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-
-  const v3Enabled = process.env.GRAPH_MEMORY_V3 === "1";
+  const nodesPath = path.join(graphRoot, "nodes");
+  const archivePath = path.join(graphRoot, "archive");
 
   return {
-    v3: {
-      enabled: v3Enabled,
-      shadow: v3Enabled && process.env.GRAPH_MEMORY_V3_SHADOW !== "0",
-    },
+    shadow: process.env.GRAPH_MEMORY_SHADOW === "1",
 
     session: {
       scribeInterval: 10,
@@ -101,7 +105,7 @@ function createConfig() {
       minSessionMessages: 3,
       pipelineCooldownMs: 300_000,
       daemonPollMs: 30_000,
-      daemonConcurrency: 4,
+      daemonConcurrency: 6,
       dailyAnalysisHourLocal: 7,
       dailyAnalysisTimeZone: inferredTimeZone,
     },
@@ -109,12 +113,6 @@ function createConfig() {
     graph: {
       maxMapTokens: 12000,
       maxMapInjectionTokens: 7000,
-      maxSomaTokens: 1200,
-      maxWorkingTokens: 3200,
-      maxDreamsContextTokens: 600,
-      maxPriors: 30,
-      maxPriorsTokens: 1500,
-      maxNodesBeforePrune: 1200,
       maxSessionStartTokens: 15000,
       maxPinnedTokens: 3000,
       decayHalfLifeDays: 90,
@@ -139,6 +137,12 @@ function createConfig() {
       maxMapEntriesPerCategory: 8,
       maxPendingDreams: 15,
       maxDreamsPerSession: 3,
+      maxPriors: 30,
+      maxPriorsTokens: 1500,
+      maxNodesBeforePrune: 300,
+      maxSomaTokens: 2000,
+      maxWorkingTokens: 4000,
+      maxDreamsContextTokens: 1500,
     },
 
     skillforge: {
@@ -165,8 +169,8 @@ function createConfig() {
 
     paths: {
       graphRoot,
-      nodes: path.join(graphRoot, "nodes"),
-      archive: path.join(graphRoot, "archive"),
+      nodes: nodesPath,
+      archive: archivePath,
       deltas: path.join(graphRoot, ".deltas"),
       dreams: path.join(graphRoot, "dreams"),
       buffer: path.join(graphRoot, ".buffer"),
@@ -191,7 +195,7 @@ function createConfig() {
       dreamsContext: path.join(graphRoot, "DREAMS.md"),
       deltasAudited: path.join(graphRoot, ".deltas/audited"),
       activeProjects: path.join(graphRoot, ".active-projects"),
-      sessions: path.join(graphRoot, ".sessions"),
+      sessionTraces: path.join(graphRoot, ".sessions"),
       briefs: path.join(graphRoot, "briefs"),
       dailyBriefs: path.join(graphRoot, "briefs/daily"),
       inputsRoot: path.join(graphRoot, ".inputs"),
@@ -217,14 +221,21 @@ function createConfig() {
       // Prompts are bundled relative to dist/ (or src/ in dev)
       prompts: path.resolve(__dirname, "prompts"),
 
-      // v3 paths (Layer 1-4)
-      v3Mind: path.join(graphRoot, "mind"),
-      v3Lenses: path.join(graphRoot, "lenses"),
-      v3Sessions: path.join(graphRoot, "sessions"),
-      v3Graph: path.join(graphRoot, "graph"),
-      v3GraphIndex: path.join(graphRoot, "graph", ".index.json"),
-      v3GraphArchive: path.join(graphRoot, "graph", ".archive"),
-      v3PipelineObservations: path.join(graphRoot, ".pipeline", "observations"),
+      // project-scoped paths
+      auditRoot: path.join(graphRoot, "audit"),
+      auditProjects: path.join(graphRoot, "audit", "projects"),
+      dreamsProjects: path.join(graphRoot, "dreams", "projects"),
+      projectLocks: path.join(graphRoot, ".jobs", "project-locks"),
+      globalLock: path.join(graphRoot, ".jobs", "global.lock"),
+
+      // mental model paths
+      mind: path.join(graphRoot, "mind"),
+      lenses: path.join(graphRoot, "lenses"),
+      sessions: path.join(graphRoot, "sessions"),
+      // nodes/ is the canonical store; older installs may have an empty graph/
+      // shadow directory but pipeline code reads and writes nodes/.
+      graphIndex: path.join(graphRoot, "graph", ".index.json"),
+      pipelineObservations: path.join(graphRoot, ".pipeline", "observations"),
     },
 
     git: {
@@ -240,10 +251,12 @@ function createConfig() {
     },
 
     notionSync: {
-      enabled: (local as any).notionSync?.enabled ?? false,
-      syncHourLocal: (local as any).notionSync?.syncHourLocal ?? 8,
-      maxBatchSize: (local as any).notionSync?.maxBatchSize ?? 30,
-      skipInbound: (local as any).notionSync?.skipInbound ?? false,
+      enabled: local.notionSync?.enabled ?? false,
+      syncHourLocal: local.notionSync?.syncHourLocal ?? 8,
+      skipInbound: local.notionSync?.skipInbound ?? false,
+      webhookSecret: local.notionSync?.webhookSecret
+        ? local.notionSync.webhookSecret.replace(/^\$\{(\w+)\}$/, (_, v) => process.env[v] || "")
+        : process.env.NOTION_WEBHOOK_SECRET || "",
     },
 
     /** Path to the global config pointer file */

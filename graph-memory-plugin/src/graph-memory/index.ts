@@ -5,6 +5,7 @@ import { ensureRuntimeConfig } from "./runtime.js";
 import { ensureWorkingDirectories } from "./working-files.js";
 import { ensureExternalInputsConfig } from "./external-inputs.js";
 import fs from "fs";
+import path from "path";
 
 export { activityBus } from "./events.js";
 export { CONFIG, saveGlobalConfig, isGraphInitialized, reloadConfig } from "./config.js";
@@ -18,7 +19,7 @@ export function initializeGraph() {
     CONFIG.paths.deltas,
     CONFIG.paths.buffer,
     CONFIG.paths.dreams,
-    CONFIG.paths.sessions,
+    CONFIG.paths.sessionTraces,
     CONFIG.paths.briefs,
     CONFIG.paths.dailyBriefs,
     CONFIG.paths.inputsRoot,
@@ -44,19 +45,19 @@ export function initializeGraph() {
     `${CONFIG.paths.nodes}/insight`,
     `${CONFIG.paths.nodes}/pattern`,
 
-    // v3 directories
-    CONFIG.paths.v3Mind,
-    CONFIG.paths.v3Lenses,
-    `${CONFIG.paths.v3Lenses}/_archived`,
-    CONFIG.paths.v3Sessions,
-    CONFIG.paths.v3Graph,
-    CONFIG.paths.v3GraphArchive,
-    CONFIG.paths.v3PipelineObservations,
+    CONFIG.paths.mind,
+    CONFIG.paths.lenses,
+    `${CONFIG.paths.lenses}/_archived`,
+    CONFIG.paths.sessions,
+    path.dirname(CONFIG.paths.graphIndex),
+    CONFIG.paths.nodes,
+    CONFIG.paths.archive,
+    CONFIG.paths.pipelineObservations,
     ...[
       "patterns", "anti-patterns", "decisions", "preferences",
       "procedures", "corrections", "projects", "concepts",
       "architecture", "people", "tools",
-    ].map((cat) => `${CONFIG.paths.v3Graph}/${cat}`),
+    ].map((cat) => `${CONFIG.paths.nodes}/${cat}`),
   ];
 
   for (const dir of dirs) {

@@ -21,7 +21,7 @@ This directory is the active plugin surface in the repository. If you cloned the
 
 - remembers preferences, decisions, project context, and recurring patterns across sessions
 - exposes a `graph_memory` tool for search, recall, remember, inspection, and maintenance
-- loads compact context into new sessions via **mental model whispers** (v3) or traditional context files (v2)
+- loads compact context into new sessions via **mental model whispers**, with the older full-context path kept as a fallback
 - supports Claude Code (MCP + hooks), OpenCode (native plugin), and pi (extension)
 - runs a background pipeline that extracts observations, compresses mental models, and generates creative associations
 - keeps git history for memory changes so you can inspect or revert them
@@ -30,7 +30,7 @@ This directory is the active plugin surface in the repository. If you cloned the
 
 ### Mental Model System
 
-The system stores a structured mental model alongside the traditional node graph, replacing the previous `PRIORS.md` + `SOMA.md` two-file approach. The v2 pipeline (`scribe → auditor → librarian → dreamer`) remains the active pipeline, but injection now reads from the mental model.
+The system stores a structured mental model alongside the durable node graph, replacing the previous `PRIORS.md` + `SOMA.md` two-file approach. The durable graph is stored once in `nodes/`; the v3 mental-model layers compress that graph into low-token session context.
 
 **Layers:**
 
@@ -39,7 +39,7 @@ The system stores a structured mental model alongside the traditional node graph
 | Layer 1: Global Mind | `mind/model.json`, `mind/whisper.txt` | Cognitive style, preferences, guardrails, emotional profile |
 | Layer 2: Project Lenses | `lenses/{project}/` | Per-project tech stack, conventions, active work, open threads |
 | Layer 3: Session Logs | `sessions/{project}.jsonl` | Per-session records of shipped work, decisions, next-session hints |
-| Layer 4: Graph | `graph/`, `nodes/` | Durable knowledge nodes with edges, confidence, and decay |
+| Layer 4: Graph | `nodes/` | Durable knowledge nodes with edges, confidence, and decay |
 
 ### Pipeline
 
@@ -56,14 +56,14 @@ All four pipeline prompts were improved to capture "true memory" — evolving op
 
 Session-start uses a tiered injection strategy:
 
-1. **If `GRAPH_MEMORY_V3=1` and whisper data exists** — compressed whispers (~1,100 tokens total: global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150)
-2. **Otherwise (default)** — structured mental model from `mind/model.json` + MAP + WORKING + PINNED + DREAMS
+1. **Default** — compressed whispers (~1,100 tokens total: global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150)
+2. **Fallback** — structured mental model from `mind/model.json` + MAP + WORKING + PINNED + DREAMS
 
-Both paths share the same underlying data. The v2 path reads the model JSON directly; the v3 whisper path uses pre-compressed paragraphs for minimal token cost.
+Both paths share the same underlying durable nodes. Set `GRAPH_MEMORY_V3=0` only for emergency fallback while debugging the v3 context path.
 
-### v3 Pipeline Stages (present but not active by default)
+### v3 Pipeline Stages
 
-Observer, compressor, and dreamer-v3 stages were built but rolled back after failing to validate in production. The code remains in the codebase and can be re-enabled with `GRAPH_MEMORY_V3=1`. Key issues that caused the rollback: worker spawn storms, compressor never triggering, and unprocessed observations piling up.
+Observer, compressor, and dreamer-v3 stages are the active mental-model pipeline. They read and write the same durable node files in `nodes/`, while `mind/`, `lenses/`, and `sessions/` hold compressed context layers.
 
 ### Harness Adapters
 
@@ -162,6 +162,16 @@ General:
 
 - `bin/docker-stop.sh`
 
+### Ngrok (Notion Webhooks)
+
+If you are using Notion sync with webhooks, start an ngrok tunnel pointing at the daemon port:
+
+```bash
+ngrok http 3100
+```
+
+Free-tier ngrok URLs change on every restart — update the webhook URL in your Notion integration settings after restarting. See [docs/notion-webhook-troubleshooting.md](docs/notion-webhook-troubleshooting.md) for full details.
+
 ## Commands
 
 Installed slash commands (available in both Claude Code and OpenCode):
@@ -176,6 +186,9 @@ Installed slash commands (available in both Claude Code and OpenCode):
 | `/memory-input-refresh` | Refresh configured external inputs and ingest new data |
 | `/memory-switch-harness` | Switch the background pipeline worker between codex, claude, pi, and opencode |
 | `/memory-wire-project` | Wire (or refresh) the graph-memory section in this project's `CLAUDE.md` |
+| `/notion-setup` | Configure Notion sync for a parent page or database |
+| `/notion-sync` | Sync graph-memory content to Notion |
+| `/notion-consolidate` | Apply reviewed Notion edits back into memory |
 | `/refresh-skill` | Manually refresh a skillforged skill whose source node has drifted |
 
 Claude Code also provides `/recall <query>` as a skill command with deeper graph lookup and edge traversal.
@@ -264,18 +277,18 @@ Resources:
 | graph root pointer | `~/.graph-memory-config.yml` | `~/.graph-memory/` |
 | per-graph settings | `<graphRoot>/config.yml` | git enabled |
 | runtime config | `<graphRoot>/.runtime-config.json` | `manual` |
-| v3 enable | `GRAPH_MEMORY_V3` env var | disabled |
-| v3 shadow mode | `GRAPH_MEMORY_V3_SHADOW` env var | enabled when v3 is on |
+| v3 enable | `GRAPH_MEMORY_V3` env var | enabled unless set to `0` |
+| v3 shadow mode | `GRAPH_MEMORY_V3_SHADOW` env var | disabled unless set to `1` |
 
 ## Storage Layout
 
 ```text
 ~/.graph-memory/
-  nodes/                    # Active knowledge nodes (v2)
+  nodes/                    # Active durable knowledge nodes for all graph layers
   archive/                  # Archived nodes
   dreams/                   # pending/, integrated/, archived/
   briefs/                   # Daily brief outputs
-  graph/                    # v3 graph (nodes + .index.json)
+  graph/.index.json         # v3 lookup index for nodes/
   mind/                     # v3 Layer 1: global mental model
     model.json              # cognitive style, preferences, guardrails
     whisper.txt             # pre-generated injection paragraph

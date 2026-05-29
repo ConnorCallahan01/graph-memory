@@ -287,7 +287,7 @@ function applyBreakOff(op: {
     type: "contains",
     weight: 0.8,
   }));
-  const existingEdges = parentParsed.data.edges || [];
+  const existingEdges: any[] = Array.isArray(parentParsed.data.edges) ? parentParsed.data.edges : [];
   const existingTargets = new Set(existingEdges.map((e: any) => e.target));
   for (const edge of containsEdges) {
     if (!existingTargets.has(edge.target)) {
@@ -374,10 +374,11 @@ function applyMerge(absorbPath: string, intoPath: string, reason: string) {
   );
 
   // Merge edges (dedupe)
-  const intoEdges = intoParsed.data.edges || [];
+  const intoEdges: any[] = Array.isArray(intoParsed.data.edges) ? intoParsed.data.edges : [];
   const existingTargets = new Set(intoEdges.map((e: any) => e.target));
-  existingTargets.add(intoPath); // Don't create self-edge
-  for (const edge of absorbParsed.data.edges || []) {
+  existingTargets.add(intoPath);
+  const absorbEdges: any[] = Array.isArray(absorbParsed.data.edges) ? absorbParsed.data.edges : [];
+  for (const edge of absorbEdges) {
     if (!existingTargets.has(edge.target) && edge.target !== absorbPath) {
       intoEdges.push(edge);
       existingTargets.add(edge.target);
@@ -422,7 +423,7 @@ function addContradictionEdge(pathA: string, pathB: string, resolution: string) 
 
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = matter(raw);
-    const edges = parsed.data.edges || [];
+    const edges: any[] = Array.isArray(parsed.data.edges) ? parsed.data.edges : [];
     const existingTargets = new Set(edges.map((e: any) => e.target));
 
     if (!existingTargets.has(tgt)) {
@@ -520,7 +521,7 @@ function recalcParentConfidence() {
     try {
       const raw = fs.readFileSync(filePath, "utf-8");
       const parsed = matter(raw);
-      for (const edge of parsed.data.edges || []) {
+      for (const edge of Array.isArray(parsed.data.edges) ? parsed.data.edges : []) {
         if (edge.type === "contains") {
           if (!parentChildren.has(nodePath)) parentChildren.set(nodePath, []);
           parentChildren.get(nodePath)!.push(edge.target);

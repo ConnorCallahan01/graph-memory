@@ -13,17 +13,20 @@ import { applyDeltas } from "./pipeline/mechanical-apply.js";
 import { buildLibrarianInput } from "./pipeline/librarian.js";
 import { buildDreamerInput } from "./pipeline/dreamer.js";
 import { fullRegenerateMAP, rebuildIndex, rebuildArchiveIndex, regenerateAllContextFiles, regenerateCoreContextFiles, validateEdgeType } from "./pipeline/graph-ops.js";
-import { addToIndex as addToV3Index, addEntryToIndex, getStats, getAntiPatterns } from "./pipeline/graph-index-v3.js";
+import { addToIndex as addToGraphIndex, addEntryToIndex, getStats, getAntiPatterns } from "./pipeline/graph-index.js";
 import { bootstrapProjectDoc, detectDocDrift, resolveDocPath } from "./pipeline/bootstrap.js";
 import { runDecay } from "./pipeline/decay.js";
 import { updateManifest } from "./manifest.js";
 import { clearConsolidationPending } from "./dirty-state.js";
 import { readActiveProject } from "./project.js";
-import { countJobs, enqueueJob, hasActiveJob } from "./pipeline/job-queue.js";
+import { countJobs, enqueueJob, hasActiveJob, listJobs } from "./pipeline/job-queue.js";
+import { getJobProject } from "./pipeline/job-queue.js";
+import type { GraphMemoryJob } from "./pipeline/job-schema.js";
 import { getRuntimeStatus, GraphMemoryRuntimeMode, saveRuntimeConfig, WorkerProvider } from "./runtime.js";
 import { readNotionSyncState, writeNotionSyncState, createEmptyNotionSyncState, consolidateNotionWorkspace } from "./pipeline/notion-sync.js";
-import { checkNtn, createPage as notionCreatePage, createDatabase, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA } from "./pipeline/notion-cli.js";
+import { checkNtn, createPage as notionCreatePage, createDatabaseRow, buildDatabaseProperties, TASKS_DB_SCHEMA, DECISIONS_DB_SCHEMA, BRIEFS_DB_SCHEMA } from "./pipeline/notion-cli.js";
 import { setupNotionWorkspace } from "./pipeline/notion-setup.js";
+import { addNotionPickupItem } from "./project-working.js";
 
 // --- Index cache ---
 let indexCache: { data: any[]; mtime: number } | null = null;
@@ -70,6 +73,8 @@ export async function handleGraphMemory(args: {
   authPathInContainer?: string;
   memoryLimit?: string;
   cpuLimit?: string;
+  workerProvider?: string;
+  workerModel?: string;
 }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   const { action } = args;
 
@@ -112,9 +117,11 @@ export async function handleGraphMemory(args: {
       return runNotionSyncAction();
     case "notion_consolidate":
       return runNotionConsolidateAction(args);
+    case "notion_create_task":
+      return runNotionCreateTaskAction(args);
     default:
       return {
-        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap, notion_setup, notion_sync, notion_consolidate` }],
+        content: [{ type: "text", text: `Unknown action: ${action}. Available: read_node, search, recall, list_edges, read_dream, write_note, remember, resurface, status, history, revert, consolidate, compress, initialize, configure_runtime, bootstrap, notion_setup, notion_sync, notion_consolidate, notion_create_task` }],
         isError: true,
       };
   }
@@ -302,7 +309,7 @@ function updateIndexEntry(nodePath: string, fm: any) {
     indexCache = null;
 
     try {
-      const v3Entry = {
+      const graphEntry = {
         path: nodePath,
         gist: entry.gist,
         tags: entry.tags,
@@ -320,8 +327,8 @@ function updateIndexEntry(nodePath: string, fm: any) {
         recall_action_count: entry.recall_action_count,
         soma_intensity: entry.soma_intensity,
       };
-      addEntryToIndex(v3Entry);
-    } catch { /* non-critical v3 sync */ }
+      addEntryToIndex(graphEntry);
+    } catch { /* non-critical graph index sync */ }
   } catch { /* non-critical */ }
 }
 
@@ -959,6 +966,7 @@ function initializeGraphAction(graphRoot?: string) {
 function configureRuntime(args: {
   runtimeMode?: string;
   workerProvider?: string;
+  workerModel?: string;
   containerName?: string;
   imageName?: string;
   authVolume?: string;
@@ -980,7 +988,8 @@ function configureRuntime(args: {
     mode: runtimeMode,
     docker: {
       enabled: runtimeMode === "docker",
-      workerProvider: (args.workerProvider as WorkerProvider) || "codex",
+      ...(args.workerProvider ? { workerProvider: args.workerProvider as WorkerProvider } : {}),
+      ...(args.workerModel ? { workerModel: args.workerModel } : {}),
       ...(args.containerName ? { containerName: args.containerName } : {}),
       ...(args.imageName ? { image: args.imageName } : {}),
       ...(args.authVolume ? { authVolume: args.authVolume } : {}),
@@ -1026,7 +1035,7 @@ function runBootstrapAction(args: { project?: string; harness?: string; cwd?: st
   };
 }
 
-function getV3Status(): Record<string, any> {
+function getGraphIndexStatus(): Record<string, any> {
   try {
     const stats = getStats();
     const antiPatterns = getAntiPatterns();
@@ -1043,6 +1052,18 @@ function getV3Status(): Record<string, any> {
   } catch {
     return { available: false };
   }
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return `${m}m ${rs}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${rm}m`;
 }
 
 function getStatus() {
@@ -1099,6 +1120,23 @@ function getStatus() {
   const activeProject = readActiveProject();
   const runtime = getRuntimeStatus();
 
+  const runningJobList = listJobs("running");
+  const workers = runningJobList.map((job: GraphMemoryJob) => {
+    const elapsed = job.startedAt ? Date.now() - Date.parse(job.startedAt) : null;
+    return {
+      jobId: job.id,
+      type: job.type,
+      project: getJobProject(job) || "global",
+      startedAt: job.startedAt || null,
+      elapsedMs: elapsed,
+      elapsedHuman: elapsed ? formatDuration(elapsed) : null,
+      attempt: job.attempt,
+      workerPid: job.workerPid || null,
+      logFile: job.logFile || null,
+      triggerSource: job.triggerSource,
+    };
+  });
+
   const status: Record<string, any> = {
     initialized,
     firstRun: !initialized,
@@ -1113,9 +1151,10 @@ function getStatus() {
     runningJobs,
     scribePending,
     consolidationPending,
+    workers,
     runtime,
     warnings,
-    v3: getV3Status(),
+    graphIndex: getGraphIndexStatus(),
   };
 
   return { content: [{ type: "text" as const, text: JSON.stringify(status, null, 2) }] };
@@ -1212,11 +1251,75 @@ async function runNotionConsolidateAction(args: { dryRun?: boolean; [key: string
   }
 }
 
+// --- notion_create_task action ---
+
+async function runNotionCreateTaskAction(args: { name?: string; project?: string; status?: string; priority?: string; due?: string; [key: string]: any }): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  if (!args.name) {
+    return {
+      content: [{ type: "text" as const, text: "Missing required field: name" }],
+      isError: true,
+    };
+  }
+
+  const state = readNotionSyncState();
+  if (!state.parentPageId) {
+    return {
+      content: [{ type: "text" as const, text: "Notion sync not configured. Run notion_setup first." }],
+      isError: true,
+    };
+  }
+
+  const tasksDb = state.databases.tasks;
+  if (!tasksDb?.id) {
+    return {
+      content: [{ type: "text" as const, text: "Tasks database not found. Run notion_setup first." }],
+      isError: true,
+    };
+  }
+
+  try {
+    const properties: Record<string, any> = {
+      Name: args.name,
+      Status: args.status || "Backlog",
+      Priority: args.priority || "Medium",
+    };
+    if (args.project) properties.Project = args.project;
+    if (args.due) properties.Due = args.due;
+
+    const result = createDatabaseRow(tasksDb.id, properties, undefined, "Name");
+
+    const rowKey = `task:${args.name}`;
+    state.rows[rowKey] = {
+      pageId: result.id,
+      sourceField: "tasks",
+      status: args.status || "Backlog",
+      lastSyncedHash: "",
+    };
+    writeNotionSyncState(state);
+
+    if (args.project) {
+      addNotionPickupItem(args.project, `[Agent → Notion] Created task "${args.name}" (${args.status || "Backlog"})`);
+    }
+
+    return {
+      content: [{
+        type: "text" as const,
+        text: `Task created in Notion: "${args.name}" (${result.url})`,
+      }],
+    };
+  } catch (err: any) {
+    return {
+      content: [{ type: "text" as const, text: `Failed to create Notion task: ${err.message}` }],
+      isError: true,
+    };
+  }
+}
+
 // Zod schema for the tool (exported for MCP server registration)
 export const graphMemorySchema = {
   action: z.enum([
     "read_node", "search", "recall", "list_edges", "read_dream", "write_note",
-    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap", "notion_setup", "notion_sync", "notion_consolidate"
+    "remember", "resurface", "status", "history", "revert", "consolidate", "compress", "initialize", "configure_runtime", "bootstrap", "notion_setup", "notion_sync", "notion_consolidate", "notion_create_task"
   ]).describe("The action to perform on the knowledge graph"),
   path: z.string().optional()
     .describe("Node path for read_node/list_edges/remember, dream path for read_dream, commit hash for revert"),
@@ -1258,6 +1361,8 @@ export const graphMemorySchema = {
     .describe("Pin node to prevent decay and auto-load at session start for matching projects"),
   workerProvider: z.enum(["codex", "claude", "pi", "opencode"]).optional()
     .describe("Worker harness for configure_runtime (codex, claude, pi, opencode)"),
+  workerModel: z.string().optional()
+    .describe("Model override for pipeline workers (e.g. 'sonnet', 'o3', 'gpt-4.1'). Harness-specific."),
   runtimeMode: z.enum(["manual", "docker"]).optional()
     .describe("Runtime mode for configure_runtime"),
   containerName: z.string().optional()

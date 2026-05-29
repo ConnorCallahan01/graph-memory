@@ -127,7 +127,7 @@ function handleCreateNode(delta: NormalizedDelta, errors: string[]): boolean {
         parsed.data.confidence = delta.confidence;
       }
 
-      const existingEdges = parsed.data.edges || [];
+      const existingEdges: any[] = Array.isArray(parsed.data.edges) ? parsed.data.edges : [];
       const existingTargets = new Set(existingEdges.map((e: any) => e.target));
       for (const edge of delta.edges || []) {
         if (!existingTargets.has(edge.target)) {
@@ -175,7 +175,7 @@ function handleCreateNode(delta: NormalizedDelta, errors: string[]): boolean {
             parsed.data.confidence = delta.confidence;
           }
 
-          const existingEdges = parsed.data.edges || [];
+          const existingEdges: any[] = Array.isArray(parsed.data.edges) ? parsed.data.edges : [];
           const existingTargets = new Set(existingEdges.map((e: any) => e.target));
           for (const edge of delta.edges || []) {
             if (!existingTargets.has(edge.target)) {
@@ -339,7 +339,7 @@ function handleCreateEdge(delta: NormalizedDelta, errors: string[]): boolean {
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = matter(raw);
-    const edges = parsed.data.edges || [];
+    const edges: any[] = Array.isArray(parsed.data.edges) ? parsed.data.edges : [];
     const existingTargets = new Set(edges.map((e: any) => e.target));
     if (!existingTargets.has(delta.target)) {
       edges.push({
@@ -373,7 +373,7 @@ function handleCreateAntiEdge(delta: NormalizedDelta, errors: string[]): boolean
   try {
     const raw = fs.readFileSync(filePath, "utf-8");
     const parsed = matter(raw);
-    const antiEdges = parsed.data.anti_edges || [];
+    const antiEdges: any[] = Array.isArray(parsed.data.anti_edges) ? parsed.data.anti_edges : [];
     const existingTargets = new Set(antiEdges.map((e: any) => e.target));
     if (!existingTargets.has(delta.target)) {
       antiEdges.push({

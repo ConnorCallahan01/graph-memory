@@ -1,6 +1,6 @@
 {
   "name": "graph-memory",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Persistent, self-evolving memory for AI agents. Gives any agent a knowledge graph that grows from conversations.",
   "author": "graph-memory",
   "mcpServers": {
@@ -39,6 +39,36 @@
       "name": "memory-input-refresh",
       "description": "Refresh configured external input sources and ingest new data",
       "file": "./commands/memory-input-refresh.md"
+    },
+    {
+      "name": "memory-wire-project",
+      "description": "Wire graph-memory awareness into the current project's instruction file",
+      "file": "./commands/memory-wire-project.md"
+    },
+    {
+      "name": "memory-switch-harness",
+      "description": "Switch the worker harness used for pipeline background jobs",
+      "file": "./commands/memory-switch-harness.md"
+    },
+    {
+      "name": "notion-setup",
+      "description": "Set up Notion workspace sync — create databases and wiki pages",
+      "file": "./commands/notion-setup.md"
+    },
+    {
+      "name": "notion-sync",
+      "description": "Trigger manual Notion sync — push graph changes to Notion workspace",
+      "file": "./commands/notion-sync.md"
+    },
+    {
+      "name": "notion-consolidate",
+      "description": "Consolidate batched Notion wiki pages into category pages",
+      "file": "./commands/notion-consolidate.md"
+    },
+    {
+      "name": "refresh-skill",
+      "description": "Refresh a skillforge-generated skill from its source node",
+      "file": "./commands/refresh-skill.md"
     }
   ],
   "agents": [
@@ -76,6 +106,51 @@
       "name": "memory-morning-kickoff",
       "description": "Turn the latest brief into a concrete kickoff plan for the active repository.",
       "file": "./agents/memory-morning-kickoff.md"
+    },
+    {
+      "name": "memory-observer",
+      "description": "V3 global observer — extract cross-project patterns from scribe deltas into observations and session logs.",
+      "file": "./agents/memory-observer.md"
+    },
+    {
+      "name": "memory-compressor",
+      "description": "V3 compressor — fold observations into mental models and generate compressed whispers.",
+      "file": "./agents/memory-compressor.md"
+    },
+    {
+      "name": "memory-dreamer-v3",
+      "description": "V3 creative recombination using compressed mental models instead of raw nodes.",
+      "file": "./agents/memory-dreamer-v3.md"
+    },
+    {
+      "name": "memory-skillforge",
+      "description": "Convert high-access knowledge nodes into executable slash-command skills.",
+      "file": "./agents/memory-skillforge.md"
+    },
+    {
+      "name": "memory-working-updater",
+      "description": "Maintain per-project working state from completed sessions.",
+      "file": "./agents/memory-working-updater.md"
+    },
+    {
+      "name": "memory-claude-wiring",
+      "description": "Wire graph-memory awareness into a project's CLAUDE.md — idempotent, safe to re-run.",
+      "file": "./agents/memory-claude-wiring.md"
+    },
+    {
+      "name": "memory-notion-sync",
+      "description": "Transform graph memory data into Notion content — produce sync plan for outbound pipeline.",
+      "file": "./agents/memory-notion-sync.md"
+    },
+    {
+      "name": "memory-notion-inbound",
+      "description": "Process human edits from Notion and produce structured deltas for the graph pipeline.",
+      "file": "./agents/memory-notion-inbound.md"
+    },
+    {
+      "name": "memory-notion-merge",
+      "description": "Three-way merge when both graph node and Notion page changed — human intent wins.",
+      "file": "./agents/memory-notion-merge.md"
     }
   ],
   "skills": [
@@ -123,6 +198,11 @@
       "name": "memory-input-refresh",
       "description": "Refresh Gmail and Calendar inputs on the host for the morning brief",
       "path": "./skills/memory-input-refresh"
+    },
+    {
+      "name": "memory-switch-harness",
+      "description": "Switch the worker harness used for pipeline background jobs (codex, claude, pi, opencode) and optionally set the model",
+      "path": "./skills/memory-switch-harness"
     }
   ],
   "hooks": "./hooks/hooks.json"

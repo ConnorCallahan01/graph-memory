@@ -31,9 +31,18 @@ Available: codex | claude | pi | opencode
 
 7. Ask which harness they want to switch to.
 
+### Phase 1b: Model override (optional)
+
+7b. Ask if they want to set a model override for pipeline workers. Explain:
+    - Each harness has a default model (e.g. codex uses the ChatGPT default, claude uses `sonnet`).
+    - Setting `workerModel` overrides this for all pipeline stages (scribe, auditor, librarian, dreamer, etc.).
+    - Common values: `sonnet`, `o3`, `o4-mini`, `gpt-4.1`, `claude-sonnet-4-20250514`, etc. The value depends on the chosen harness's model naming.
+    - Pass `null` or omit to use the harness default.
+    - Current `workerModel` is shown in status as `runtime.docker.workerModel`.
+
 ### Phase 2: Apply the config switch
 
-8. Once they pick, try `graph_memory(action="configure_runtime", runtimeMode="<mode>", workerProvider="<chosen_harness>")`.
+8. Once they pick, try `graph_memory(action="configure_runtime", runtimeMode="<mode>", workerProvider="<chosen_harness>", workerModel="<model>" or omit)`.
    - `<mode>` is the current runtime mode from status (typically `docker`).
 9. If that fails, fall back to directly editing `~/.graph-memory/.runtime-config.json`: read it, set `docker.workerProvider` to the chosen harness, set `updatedAt` to now, and write it back.
 

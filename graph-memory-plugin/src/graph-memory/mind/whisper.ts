@@ -12,7 +12,7 @@ import { CONFIG } from "../config.js";
 const MAX_GLOBAL_WHISPER_TOKENS = 400;
 
 export function whisperPath(): string {
-  return path.join(CONFIG.paths.v3Mind, "whisper.txt");
+  return path.join(CONFIG.paths.mind, "whisper.txt");
 }
 
 export function readWhisper(): string | null {
@@ -23,7 +23,7 @@ export function readWhisper(): string | null {
 }
 
 export function writeWhisper(text: string): void {
-  const dir = CONFIG.paths.v3Mind;
+  const dir = CONFIG.paths.mind;
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(whisperPath(), text);
 }

@@ -14,13 +14,14 @@ import { randomUUID } from "crypto";
 import { CONFIG } from "../config.js";
 import { ObservationType } from "../mind/types.js";
 import { ProjectObservation, ProjectModel, ProjectModelFile } from "./types.js";
+import { sanitizeProjectSlug } from "../working-files.js";
 
 export function lensDir(project: string): string {
-  return path.join(CONFIG.paths.v3Lenses, project);
+  return path.join(CONFIG.paths.lenses, sanitizeProjectSlug(project));
 }
 
 export function archivedLensDir(): string {
-  return path.join(CONFIG.paths.v3Lenses, "_archived");
+  return path.join(CONFIG.paths.lenses, "_archived");
 }
 
 export function observationsPath(project: string): string {
@@ -47,7 +48,7 @@ export function lensExists(project: string): boolean {
 }
 
 export function listActiveLenses(): string[] {
-  const root = CONFIG.paths.v3Lenses;
+  const root = CONFIG.paths.lenses;
   if (!fs.existsSync(root)) return [];
   return fs.readdirSync(root).filter((name) => {
     if (name.startsWith("_") || name.startsWith(".")) return false;
@@ -92,6 +93,20 @@ export function readObservations(project: string, since?: string): ProjectObserv
   return all.filter((o) => o.timestamp > since);
 }
 
+export function countPendingObservations(project: string): number {
+  const filePath = observationsPath(project);
+  if (!fs.existsSync(filePath)) return 0;
+
+  const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
+  let count = 0;
+  for (const line of lines) {
+    try {
+      if (!JSON.parse(line).absorbed) count++;
+    } catch { /* skip malformed */ }
+  }
+  return count;
+}
+
 export function markObservationsAbsorbed(project: string, ids: string[]): void {
   const filePath = observationsPath(project);
   if (!fs.existsSync(filePath)) return;
@@ -99,7 +114,8 @@ export function markObservationsAbsorbed(project: string, ids: string[]): void {
   const idSet = new Set(ids);
   const lines = fs.readFileSync(filePath, "utf-8").trim().split("\n").filter(Boolean);
   const updated = lines.map((line) => {
-    const obs: ProjectObservation = JSON.parse(line);
+    let obs: ProjectObservation;
+    try { obs = JSON.parse(line); } catch { return line; }
     if (idSet.has(obs.id)) {
       obs.absorbed = true;
     }
@@ -119,7 +135,8 @@ export function pruneObservations(project: string, olderThanDays: number): numbe
   let pruned = 0;
 
   for (const line of lines) {
-    const obs: ProjectObservation = JSON.parse(line);
+    let obs: ProjectObservation;
+    try { obs = JSON.parse(line); } catch { kept.push(line); continue; }
     if (obs.absorbed && obs.timestamp < cutoff) {
       pruned++;
     } else {

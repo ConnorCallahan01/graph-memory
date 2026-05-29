@@ -20,7 +20,7 @@ const EMPTY_MODEL: GlobalModel = {
 };
 
 export function modelPath(): string {
-  return path.join(CONFIG.paths.v3Mind, "model.json");
+  return path.join(CONFIG.paths.mind, "model.json");
 }
 
 export function readModel(): GlobalModelFile {
@@ -36,7 +36,7 @@ export function readModel(): GlobalModelFile {
 }
 
 export function writeModel(file: GlobalModelFile): void {
-  const dir = CONFIG.paths.v3Mind;
+  const dir = CONFIG.paths.mind;
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(modelPath(), JSON.stringify(file, null, 2));
 }

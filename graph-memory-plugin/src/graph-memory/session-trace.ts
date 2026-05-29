@@ -45,7 +45,7 @@ export function sanitizeSessionId(sessionId: string): string {
 }
 
 export function getSessionTraceDir(sessionId: string): string {
-  return path.join(CONFIG.paths.sessions, sanitizeSessionId(sessionId));
+  return path.join(CONFIG.paths.sessionTraces, sanitizeSessionId(sessionId));
 }
 
 export function getToolTracePath(sessionId: string): string {

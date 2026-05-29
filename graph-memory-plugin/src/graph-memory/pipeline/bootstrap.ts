@@ -5,7 +5,7 @@ import { readModel as readGlobalModel } from "../mind/model.js";
 import { readModel as readProjectModel } from "../lenses/manager.js";
 import { readObservations as readGlobalObservations } from "../mind/observations.js";
 import { readObservations as readProjectObservations } from "../lenses/manager.js";
-import { getAntiPatterns, getByProject } from "./graph-index-v3.js";
+import { getAntiPatterns, getByProject } from "./graph-index.js";
 import { ADAPTER_CONFIGS, HarnessType } from "../adapters/types.js";
 import { activityBus } from "../events.js";
 

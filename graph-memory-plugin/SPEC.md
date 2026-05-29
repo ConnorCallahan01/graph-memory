@@ -1,5 +1,7 @@
 # Graph Memory v3 — Mental Model Architecture
 
+> Current implementation note (2026-05-18): v3 is now the default context path. The durable graph node store is unified on `nodes/`; `graph/.index.json` is the v3 lookup index, not a separate node tree. Set `GRAPH_MEMORY_V3=0` only as an emergency fallback while debugging the v3 session context path.
+
 ## Overview
 
 This spec describes a ground-up redesign of the graph-memory plugin's backend architecture. The current system (v2) is a graph database with a chat interface — 771 nodes, 53% below 0.4 confidence, injecting 11k tokens per session via 5 separate context files. It has a write-amplification problem (3,000+ I/O ops per pipeline cycle) and makes the user aware it exists through structured tool calls and visible context injection.
@@ -44,7 +46,7 @@ Layer 4: The Graph (Detailed Memory)
   - Queried on demand via recall/search, not injected
   - Categories: patterns, anti-patterns, decisions, preferences,
     procedures, corrections, projects, concepts, architecture, people, tools
-  - Storage: graph/{category}/{node}.md + graph/.index.json
+  - Storage: nodes/{category}/{node}.md + graph/.index.json
 ```
 
 ### Pipeline
@@ -574,16 +576,19 @@ Migrate existing graph data to the new format.
   - Generate initial mind/model.json from high-confidence nodes
   - Generate initial project models from project-tagged nodes
   - Generate initial whispers
-  - Copy nodes to graph/ directory structure
+  - Reuse nodes/ directly for v3 Layer 4
   - Preserve existing archive/ directory
+- [x] Validate against current live data shape
+  - Live nodes are under ~/.graph-memory/nodes/
+  - ~/.graph-memory/graph/ contains no markdown node store
 - [ ] Run migration against current live data (~797 nodes)
   - Verify generated whisper quality
   - Verify graph recall still works
   - Verify anti-patterns are correctly identified
-- [x] Keep v2 paths functional during transition
-  - Both old and new paths work simultaneously
-  - Feature flag: `GRAPH_MEMORY_V3=1` enables new system
-  - Default: v2 active, v3 in shadow mode (runs but doesn't inject)
+- [x] Keep fallback paths functional during transition
+  - Durable graph paths are unified on nodes/
+  - Feature flag: `GRAPH_MEMORY_V3=0` disables the v3 context path for emergency fallback
+  - Default: v3 active, shadow mode disabled unless `GRAPH_MEMORY_V3_SHADOW=1`
 
 ### Phase 10: Cleanup and Removal
 
@@ -605,7 +610,7 @@ Remove v2 code after v3 is validated.
   - memory-scribe.md (replaced by memory-observer.md)
   - memory-auditor.md (replaced by compressor)
   - memory-librarian.md (replaced by compressor)
-- [ ] Update dashboard to new data model
+- [x] Update dashboard to new data model
   - Show mental model, project lenses, session logs
   - Show anti-patterns as separate view
   - Show observation stream

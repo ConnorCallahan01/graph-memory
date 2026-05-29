@@ -160,7 +160,13 @@ const piAdapter: HarnessAdapter = {
 // ── OpenCode Adapter ───────────────────────────────────────────────────────
 
 const opencodeAdapter: HarnessAdapter = {
-  buildPlan(prompt, opts, _runtime) {
+  buildPlan(prompt, opts, runtime) {
+    const inDocker = runtime.mode === "docker" &&
+      process.env.GRAPH_MEMORY_ROOT === runtime.docker.graphRootInContainer;
+    const authHome = inDocker
+      ? runtime.docker.authPathInContainer
+      : process.env.HOME;
+
     const args = [
       "run", prompt,
       "--dir", opts.graphRoot,
@@ -179,6 +185,7 @@ const opencodeAdapter: HarnessAdapter = {
         stdio: ["ignore", "pipe", "pipe"] as const,
         env: {
           ...process.env,
+          ...(authHome ? { HOME: authHome } : {}),
           GRAPH_MEMORY_PIPELINE_CHILD: "1",
         },
       },

@@ -13,9 +13,10 @@ import path from "path";
 import { randomUUID } from "crypto";
 import { CONFIG } from "../config.js";
 import { SessionLog } from "./types.js";
+import { sanitizeProjectSlug } from "../working-files.js";
 
 export function sessionLogPath(project: string): string {
-  return path.join(CONFIG.paths.v3Sessions, project + ".jsonl");
+  return path.join(CONFIG.paths.sessions, sanitizeProjectSlug(project) + ".jsonl");
 }
 
 export function appendSessionLog(entry: {
@@ -29,7 +30,7 @@ export function appendSessionLog(entry: {
   correctionsGiven: string[];
   nextSessionShould: string;
 }): SessionLog {
-  const dir = CONFIG.paths.v3Sessions;
+  const dir = CONFIG.paths.sessions;
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
   const log: SessionLog = {

@@ -8,6 +8,7 @@ import {
   PipelineJob,
   ProjectSummary,
   ProjectsData,
+  SessionTraceSummary,
   StartupContext,
   fetchActivity,
   fetchArchive,
@@ -16,6 +17,7 @@ import {
   fetchPipeline,
   fetchProjectWorkingFiles,
   fetchProjects,
+  fetchSessionTraces,
   fetchSkills,
   fetchSkillContent,
   fetchStartupContext,
@@ -24,6 +26,8 @@ import {
 } from './lib/api'
 import type { PipelineStatus, ProjectWorkingFile, SkillforgeManifest } from './lib/api'
 import GraphExplorer from './components/GraphExplorer'
+import PipelinePanel from './components/PipelinePanel'
+import ProjectActivity from './components/ProjectActivity'
 
 function timeAgo(ts: string): string {
   const ms = Date.now() - Date.parse(ts)
@@ -47,6 +51,7 @@ export default function App() {
   const [activity, setActivity] = useState<ActivityEvent[]>([])
   const [jobs, setJobs] = useState<PipelineJob[]>([])
   const [projectWorking, setProjectWorking] = useState<ProjectWorkingFile | null>(null)
+  const [sessionTraces, setSessionTraces] = useState<SessionTraceSummary[]>([])
   const [showGraph, setShowGraph] = useState(false)
   const [skills, setSkills] = useState<SkillforgeManifest[]>([])
   const [expandedSkill, setExpandedSkill] = useState<string | null>(null)
@@ -71,11 +76,13 @@ export default function App() {
 
   const loadGlobal = useCallback(async () => {
     try { const m = await fetchModel(); setModel(m) } catch {}
+    try { const ctx = await fetchStartupContext(); setStartupCtx(ctx) } catch {}
   }, [])
 
   const loadActivity = useCallback(async () => {
     try { const a = await fetchActivity(30); setActivity(a) } catch {}
     try { const j = await fetchPipeline(); setJobs(j) } catch {}
+    try { const t = await fetchSessionTraces(); setSessionTraces(t) } catch {}
   }, [])
 
   useEffect(() => {
@@ -98,7 +105,7 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedProject) return
-    fetchStartupContext().then(setStartupCtx).catch(() => {})
+    fetchStartupContext(selectedProject).then(setStartupCtx).catch(() => {})
     fetchProjectWorkingFiles().then(files => {
       setProjectWorking(files.find(f => f.project === selectedProject) ?? null)
     }).catch(() => {})
@@ -158,10 +165,10 @@ export default function App() {
   const injectionLayers = startupCtx?.layers ?? []
   const pinnedNodes = startupCtx?.pinnedNodes ?? []
   const projectInjectionTokens = injectionLayers
-    .filter(l => l.id === 'working_project' || l.id === 'map')
+    .filter(l => l.id === 'project_whisper' || l.id === 'session_log' || l.id === 'working_project')
     .reduce((s, l) => s + l.tokens, 0)
   const globalInjectionTokens = injectionLayers
-    .filter(l => l.id !== 'working_project' && l.id !== 'map')
+    .filter(l => l.id === 'global_whisper' || l.id === 'guardrails')
     .reduce((s, l) => s + l.tokens, 0)
   const pinnedTokens = pinnedNodes.reduce((s, n) => s + n.tokens, 0)
 
@@ -237,14 +244,14 @@ export default function App() {
                     <span className="inject-layer-label">Global</span>
                     <div className="inject-items inject-items-row">
                       <div className="inject-item">
-                        <span className="inject-item-name">Model</span>
-                        <span className="inject-item-src">mind/model.json</span>
-                        <span className="inject-item-tokens">{model?.model?.tokenEstimate ?? '~'}t</span>
+                        <span className="inject-item-name">Whisper</span>
+                        <span className="inject-item-src">mind/whisper.txt</span>
+                        <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'global_whisper')?.tokens ?? '~'}t</span>
                       </div>
                       <div className="inject-item">
-                        <span className="inject-item-name">Dreams</span>
-                        <span className="inject-item-src">DREAMS.md</span>
-                        <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'dreams')?.tokens ?? 0}t</span>
+                        <span className="inject-item-name">Guardrails</span>
+                        <span className="inject-item-src">graph/.index.json</span>
+                        <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'guardrails')?.tokens ?? 0}t</span>
                       </div>
                     </div>
                   </div>
@@ -257,16 +264,16 @@ export default function App() {
                     <span className="inject-layer-label">Project</span>
                     <div className="inject-items inject-items-row">
                       <div className="inject-item">
-                        <span className="inject-item-name">MAP</span>
-                        <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'map')?.tokens ?? '~'}t</span>
+                        <span className="inject-item-name">Lens</span>
+                        <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'project_whisper')?.tokens ?? '~'}t</span>
                       </div>
                       <div className="inject-item">
-                        <span className="inject-item-name">Working</span>
+                        <span className="inject-item-name">Sessions</span>
+                        <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'session_log')?.tokens ?? 0}t</span>
+                      </div>
+                      <div className="inject-item">
+                        <span className="inject-item-name">Pick Up</span>
                         <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'working_project')?.tokens ?? 0}t</span>
-                      </div>
-                      <div className="inject-item">
-                        <span className="inject-item-name">Pinned</span>
-                        <span className="inject-item-tokens">{startupCtx?.pinnedNodes?.length ?? 0} nodes</span>
                       </div>
                     </div>
                   </div>
@@ -351,17 +358,7 @@ export default function App() {
                 <div className="pipeline-flow-compact pipeline-flow-compact-notion">
                   <div className="pf-step pf-step-notion"><span className="pf-num">7</span><span className="pf-name">Notion Sync</span></div>
                 </div>
-                {status?.pipelineCutoffs && status.pipelineCutoffs.length > 0 && (
-                  <div className="pipeline-jobs">
-                    {status.pipelineCutoffs.map((c) => (
-                      <div key={c.stage} className={`pipeline-job ${c.status}`}>
-                        <span className={`pipeline-job-state ${c.status === 'running' ? 'running' : c.status === 'queued' ? 'queued' : c.status === 'ready' ? 'running' : 'done'}`}>{c.status}</span>
-                        <span className={`pipeline-job-type ${c.stage === 'notion_sync' ? 'pipeline-job-type-notion' : ''}`}>{(c.stage || 'unknown').replace('_', ' ')}</span>
-                        <span className="pipeline-job-trigger">{c.detail}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                <PipelinePanel jobs={jobs} />
               </section>
 
               {skills.length > 0 && (
@@ -392,7 +389,7 @@ export default function App() {
                         </div>
                         <div className="skill-card-meta">
                           <span className="skill-card-project">{skill.project}</span>
-                          <span className="skill-card-node">{skill.source_node}</span>
+                          <span className="skill-card-node">{skill.source_nodes?.join(', ')}</span>
                           {skill.refresh_count > 0 && (
                             <span className="skill-card-refresh">{skill.refresh_count} refreshes</span>
                           )}
@@ -456,36 +453,34 @@ export default function App() {
             <div className="inject-flow inject-flow-compact">
               <div className="inject-items inject-items-row">
                 <div className="inject-item">
-                  <span className="inject-item-name">Working</span>
+                  <span className="inject-item-name">Lens</span>
+                  <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'project_whisper')?.tokens ?? 0}t</span>
+                  <span className="inject-item-src">lenses/{'{project}'}/whisper.txt</span>
+                </div>
+                <div className="inject-item">
+                  <span className="inject-item-name">Sessions</span>
+                  <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'session_log')?.tokens ?? 0}t</span>
+                  <span className="inject-item-src">recent session log</span>
+                </div>
+                <div className="inject-item">
+                  <span className="inject-item-name">Pick Up</span>
                   <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'working_project')?.tokens ?? 0}t</span>
-                  <span className="inject-item-src">lean handoff</span>
-                </div>
-                <div className="inject-item">
-                  <span className="inject-item-name">MAP slice</span>
-                  <span className="inject-item-tokens">{injectionLayers.find(l => l.id === 'map')?.tokens ?? 0}t</span>
-                  <span className="inject-item-src">project nodes</span>
-                </div>
-                <div className="inject-item">
-                  <span className="inject-item-name">Pinned</span>
-                  <span className="inject-item-tokens">{pinnedNodes.length} nodes · {pinnedTokens}t</span>
-                  <span className="inject-item-src">procedures</span>
+                  <span className="inject-item-src">next session</span>
                 </div>
                 <div className="inject-item inject-item-total">
                   <span className="inject-item-name">Total</span>
-                  <span className="inject-item-tokens">{projectInjectionTokens + pinnedTokens}t</span>
+                  <span className="inject-item-tokens">{globalInjectionTokens + projectInjectionTokens}t</span>
                 </div>
               </div>
             </div>
           </section>
 
-          <section className="project-whisper">
-            <h2 className="project-section-title">Working Memory</h2>
-            {projectWorking?.content ? (
-              <pre className="project-working-content">{projectWorking.content}</pre>
-            ) : (
-              <p className="project-whisper-empty">No working memory for this project</p>
-            )}
-          </section>
+          <ProjectActivity
+            project={selectedProject}
+            jobs={jobs}
+            sessions={sessionTraces}
+            working={projectWorking}
+          />
 
           <section className="project-sessions">
             <h2 className="project-section-title">
