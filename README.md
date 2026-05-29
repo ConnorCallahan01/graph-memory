@@ -20,6 +20,7 @@ Persistent, inspectable memory for Claude Code, OpenCode, and any MCP-compatible
 - [Quick start](#quick-start)
 - [How it works](#how-it-works)
 - [Pipeline](#pipeline)
+- [Notion Sync](#notion-sync)
 - [Skills](#skills)
 - [Tool reference](#tool-reference)
 - [Slash commands](#slash-commands)
@@ -100,32 +101,36 @@ That's it. Write memory, retrieve memory, inspect memory. The background pipelin
                               │
                  ┌────────────▼────────────┐
                  │     background pipeline  │
-                 │  scribe → auditor →      │
+                 │                          │
+                 │  scribe → auditor →      │   ← active pipeline (always runs)
                  │  librarian → dreamer     │
                  │                          │
-                 │  observer → compressor   │   ← mental model pipeline
-                 │  → dreamer-v3            │
+                 │  observer (writes to     │   ← always active, single node store
+                 │  nodes/ alongside main)  │
+                 │                          │
+                 │  compressor, dreamer-v3  │   ← code present, not active by default
                  └────────────┬────────────┘
                               │
                  ┌────────────▼────────────┐
                  │     ~/.graph-memory/     │
                  │                          │
-                 │  mind/model.json         │   ← cognitive profile
-                 │  mind/whisper.txt        │   ← compressed injection
-                 │  lenses/{project}/       │   ← project models
-                 │  sessions/{project}.jsonl│   ← session logs
-                 │  nodes/                  │   ← knowledge graph
+                 │  mind/model.json         │   ← cognitive profile (always active)
+                 │  lenses/{project}/       │   ← project models (always active)
+                 │  sessions/{project}.jsonl│   ← session logs (always active)
+                 │  nodes/                  │   ← knowledge graph (canonical store)
                  │  dreams/                 │   ← creative associations
                  └─────────────────────────┘
 ```
+
+**Mental model data is always active** — `mind/model.json`, `lenses/`, `sessions/`, and observations run unconditionally as part of the merged architecture. There is no separate "v3 mode."
 
 **Capture** — Session hooks watch your conversations and extract what changed.
 
 **Process** — The scribe extracts structured deltas. The auditor detects stale and contradictory nodes. The librarian applies judgment-heavy updates and regenerates context. The dreamer creates speculative cross-node associations.
 
-**Observe** — The observer produces structured observations from conversation patterns (how you think, what you keep correcting, where workflows stall). The compressor folds those observations into a compressed mental model.
+**Observe** — The observer produces structured observations from conversation patterns (how you think, what you keep correcting, where workflows stall). Observations flow into the shared `nodes/` store and feed mental model data.
 
-**Inject** — Next session starts with ~1,100 tokens of compressed behavioral context: your cognitive style, project conventions, guardrails, and recent session history.
+**Inject** — Next session starts with layered context: mental-model (`model.json` direct, unconditional) → MAP (per-project) → PINNED → WORKING.
 
 **Evolve** — Memory decays when unused. Nodes archive gracefully. Dreams surface unexpected connections. Everything is git-backed and reversible.
 
@@ -143,19 +148,66 @@ The memory system runs a multi-stage background pipeline. Most of this happens a
 | **Auditor** | Mechanical triage: detects stale nodes, contradictions, noise/bloat candidates |
 | **Librarian** | Applies graph updates with a prune-over-preserve philosophy. Regenerates context files |
 | **Dreamer** | Creates speculative cross-node associations — creative recombination at temperature 1.0 |
+| **Observer** | Produces structured observations and session logs from conversation patterns. Writes to the shared `nodes/` store |
 | **Skillforge** | Converts high-access memory nodes into executable slash command skills automatically |
 | **Bootstrap** | Auto-generates project docs (CLAUDE.md / AGENT.md) from mental models |
 | **Working update** | Extracts key files from tool traces — primes the next session with files you actually edited |
 
-### Mental model pipeline
+### Mental model data (always active)
+
+The system runs a **merged v2/v3 hybrid** architecture. There is no separate "v3 pipeline." Mental model data is always active:
+
+| Data | What it provides |
+|------|-----------------|
+| `mind/model.json` | Cognitive style, decision patterns, preferences, guardrails, emotional profile |
+| `lenses/{project}/` | Per-project tech stack, conventions, active work, open threads |
+| `sessions/{project}.jsonl` | Shipped work, decisions, blocked items, next-session hints |
+| `observations.jsonl` | Append-only observation feeds (global and per-project) |
+
+Session-start injection composition: **mental-model (model.json direct, unconditional) → MAP (per-project) → PINNED → WORKING**.
+
+### Inactive stages (code present, not active by default)
 
 | Stage | What it does |
 |-------|-------------|
-| **Observer** | Single LLM pass over conversation history, producing structured observations and session logs |
-| **Compressor** | Folds observations into compressed mental models, generates injection-ready whisper paragraphs (~300 tokens) |
+| **Compressor** | Folds observations into compressed mental models, generates whisper paragraphs |
 | **Dreamer V3** | Creative recombination against compressed mental models instead of raw nodes |
 
-The mental model pipeline stages are present in the codebase and can be enabled with `GRAPH_MEMORY_V3=1`. The active pipeline is battle-tested and runs by default.
+These stages exist in the codebase and can be re-enabled if needed. The active pipeline is battle-tested and runs by default.
+
+---
+
+## Notion Sync
+
+Two-way sync between your graph memory and a Notion workspace. Browse, edit, and organize your agent's memory in a human-readable interface — changes flow back.
+
+**Outbound** — Graph state mirrors to Notion: knowledge nodes become wiki pages, decisions and briefs become database rows.
+
+**Inbound** — Human edits in Notion are detected and turned into observations and deltas (never direct node mutations).
+
+**Three-way merge** — When both sides change, human intent wins. Agent information is preserved as callouts.
+
+**5 steward agents** manage scoped sync areas: knowledge, project, tasks, enrichment, and workspace structure.
+
+**Chunked sync** — 100 items per batch, sorted by confidence. The daemon auto-enqueues the next batch.
+
+```text
+# Create the Notion workspace structure
+/notion-setup
+
+# Run outbound sync (diff → plan → execute)
+/notion-sync
+
+# Merge batched wiki pages into category pages
+/notion-consolidate
+
+# Or use the tool directly:
+graph_memory(action="notion_setup")
+graph_memory(action="notion_sync")
+graph_memory(action="notion_consolidate")
+```
+
+Triggered daily by the daemon (configurable hour), or manually via slash command. Disk is the agent-readable source of truth; Notion is the human-readable presentation layer.
 
 ---
 
@@ -177,6 +229,9 @@ Cogni-Code ships with skills that integrate directly into your agent's workflow.
 | `/memory-connect-inputs` | Configure external inputs (Gmail, Calendar, Slack) for briefings |
 | `/memory-input-refresh` | Refresh configured external input sources |
 | `/refresh-skill` | Update a skillforged skill whose source node has drifted |
+| `/notion-setup` | Create Notion workspace structure (databases + wiki pages) |
+| `/notion-sync` | Run outbound sync — diff, plan, execute graph-to-Notion mirror |
+| `/notion-consolidate` | Merge batched wiki pages into category pages |
 
 ### Auto-generated skills (Skillforge)
 
@@ -220,6 +275,9 @@ The `graph_memory` MCP tool is the primary interface. Your agent uses it directl
 | `initialize` | Create graph structure and pointer file |
 | `configure_runtime` | Choose manual or Docker runtime |
 | `consolidate` | Run consolidation manually |
+| `notion_setup` | Create Notion workspace structure (databases + wiki pages) |
+| `notion_sync` | Run outbound sync (diff + plan + execute) |
+| `notion_consolidate` | Merge batched wiki pages into category pages |
 
 ---
 
@@ -268,8 +326,13 @@ Everything is plain text on your filesystem. No database, no hidden vector store
     {project}.jsonl         # Session logs (shipped, decided, blocked, next)
   nodes/                    # Durable knowledge graph nodes (markdown + YAML)
   archive/                  # Decayed nodes — resurface to restore
+    v3-graph-backup/        # Archived diverged v3 graph directory
   dreams/                   # Speculative associations awaiting validation
   working/                  # Per-project volatile context + key files
+  briefs/
+    daily/                  # Daily brief outputs
+  .inputs/                  # External brief inputs (gmail, calendar, slack)
+  .notion-sync-state.json   # Notion workspace sync state
   MAP.md                    # Compressed knowledge index
   WORKING.md                # Active session context
 ```
@@ -289,6 +352,8 @@ Your memory is just files. Open them, grep them, edit them, back them up. Git tr
 **It writes its own tools.** Skillforge converts frequently-accessed knowledge into executable slash commands. Your agent literally generates its own workflows from what it keeps looking up.
 
 **Git-backed.** Every consolidation is a commit. Inspect what changed, revert mistakes, diff between sessions. Your memory has a full history.
+
+**Notion as a mirror.** Sync your memory to a human-readable Notion workspace. Browse, edit, organize. Edits flow back. Disk is agent truth; Notion is presentation.
 
 **Inspectable by design.** The dashboard shows exactly what your agent knows. Edit a node if it's wrong. Accept a dream if it's insightful. Delete what's noise. No black box.
 

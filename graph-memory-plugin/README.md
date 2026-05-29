@@ -21,16 +21,22 @@ This directory is the active plugin surface in the repository. If you cloned the
 
 - remembers preferences, decisions, project context, and recurring patterns across sessions
 - exposes a `graph_memory` tool for search, recall, remember, inspection, and maintenance
-- loads compact context into new sessions via **mental model whispers**, with the older full-context path kept as a fallback
+- loads compact context into new sessions via **mental model injection**, with the older full-context path kept as a fallback
 - supports Claude Code (MCP + hooks), OpenCode (native plugin), and pi (extension)
 - runs a background pipeline that extracts observations, compresses mental models, and generates creative associations
 - keeps git history for memory changes so you can inspect or revert them
 
 ## Architecture
 
-### Mental Model System
+### Merged v2/v3 Hybrid
 
-The system stores a structured mental model alongside the durable node graph, replacing the previous `PRIORS.md` + `SOMA.md` two-file approach. The durable graph is stored once in `nodes/`; the v3 mental-model layers compress that graph into low-token session context.
+The system runs a merged v2/v3 hybrid architecture:
+
+- **v2 provides**: knowledge graph (`nodes/`), MAP, WORKING, DREAMS, pinned nodes, decay, context regeneration
+- **v3 provides**: mental models (`mind/`), observations, session logs, project lenses
+- **Single canonical node store**: `nodes/` — the diverged `graph/` directory has been archived to `archive/v3-graph-backup/`
+
+The durable graph is stored once in `nodes/`; the v3 mental-model layers compress that graph into low-token session context.
 
 **Layers:**
 
@@ -54,16 +60,35 @@ All four pipeline prompts were improved to capture "true memory" — evolving op
 
 ### Session Start
 
-Session-start uses a tiered injection strategy:
+Session-start uses a single injection path:
 
-1. **Default** — compressed whispers (~1,100 tokens total: global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150)
-2. **Fallback** — structured mental model from `mind/model.json` + MAP + WORKING + PINNED + DREAMS
+**mental-model (model.json direct, unconditional) → MAP (per-project) → PINNED (project-gated) → WORKING**
 
-Both paths share the same underlying durable nodes. Set `GRAPH_MEMORY_V3=0` only for emergency fallback while debugging the v3 context path.
+Both the merged path and the fallback share the same underlying durable nodes. Set `GRAPH_MEMORY_V3=0` only for emergency fallback while debugging the context path.
 
-### v3 Pipeline Stages
+### v2/v3 Pipeline Stages
 
-Observer, compressor, and dreamer-v3 stages are the active mental-model pipeline. They read and write the same durable node files in `nodes/`, while `mind/`, `lenses/`, and `sessions/` hold compressed context layers.
+The v2 pipeline (scribe → auditor → librarian → dreamer) is the active, proven pipeline. Observer, compressor, and dreamer-v3 stages are present but not active by default — they can be re-enabled with `GRAPH_MEMORY_V3=1`. All stages read and write the same durable node files in `nodes/`, while `mind/`, `lenses/`, and `sessions/` hold compressed context layers.
+
+### Notion Sync
+
+Two-way sync between graph-memory and a Notion workspace for human-readable access. Five steward agents manage scoped areas:
+
+| Steward | Scope |
+|---------|-------|
+| Knowledge | Knowledge nodes → Notion wiki pages |
+| Project | Project lenses → Notion project pages |
+| Tasks | Working state → Notion task database |
+| Enrichment | Dreams, briefs → Notion databases |
+| Workspace | Workspace manifest, structure |
+
+**Outbound sync** uses a diff + plan + execute cycle, chunked at 100 items per batch. The daemon auto-enqueues the next batch after each completed cycle.
+
+**Inbound sync** detects human edits in Notion via webhooks and creates observations/deltas (not direct node mutations). Ngrok tunnels webhook traffic to the daemon on port 3100.
+
+**Three-way merge** — when both sides change, human intent wins with agent info preserved as callouts.
+
+**Commands:** `/notion-setup`, `/notion-sync`, `/notion-consolidate`
 
 ### Harness Adapters
 
@@ -116,19 +141,9 @@ Then start OpenCode and run:
 
 Detailed clone-to-first-run instructions are in [../docs/setup-from-clone.md](../docs/setup-from-clone.md).
 
-### Seeding the Mental Model from Existing Nodes
+### Seeding the Mental Model from Existing Nodes (Legacy)
 
-If you have an existing v2 graph and want to populate the mental model structure:
-
-```bash
-# Dry run (inspect what would change)
-npx tsx src/graph-memory/scripts/migrate-v2-to-v3.ts
-
-# Apply migration
-npx tsx src/graph-memory/scripts/migrate-v2-to-v3.ts --apply
-```
-
-This reads high-confidence nodes and feeds them into the global and project models, generates whisper paragraphs, and builds the v3 graph index. The migration script does not remove or alter existing v2 data.
+The migration script `src/graph-memory/scripts/migrate-v2-to-v3.ts` was used during the v3 transition period to populate the mental model structure from existing v2 nodes. It is now legacy — new installations build the mental model organically through the pipeline. The script does not remove or alter existing v2 data.
 
 ## Runtime Model
 
@@ -188,7 +203,7 @@ Installed slash commands (available in both Claude Code and OpenCode):
 | `/memory-wire-project` | Wire (or refresh) the graph-memory section in this project's `CLAUDE.md` |
 | `/notion-setup` | Configure Notion sync for a parent page or database |
 | `/notion-sync` | Sync graph-memory content to Notion |
-| `/notion-consolidate` | Apply reviewed Notion edits back into memory |
+| `/notion-consolidate` | Merge batched wiki pages into category pages, apply reviewed Notion edits back into memory |
 | `/refresh-skill` | Manually refresh a skillforged skill whose source node has drifted |
 
 Claude Code also provides `/recall <query>` as a skill command with deeper graph lookup and edge traversal.
@@ -245,6 +260,9 @@ Supported actions:
 | `history` | Show recent git history |
 | `revert` | Roll the graph back to an earlier commit |
 | `resurface` | Move an archived node back into the active graph |
+| `notion_setup` | Create Notion workspace structure (databases + wiki pages) |
+| `notion_sync` | Run outbound sync (diff + plan + execute) |
+| `notion_consolidate` | Merge batched wiki pages into category pages (supports `dryRun` option) |
 
 Resources:
 
@@ -269,6 +287,9 @@ Resources:
 | `skillforge_refresh` | Update drifted skillforged skills |
 | `bootstrap_project_doc` | Auto-generate project documentation |
 | `memory_analysis` | Daily brief and analysis generation |
+| `notion_sync` | Outbound sync to Notion |
+| `notion_inbound_triage` | Triage incoming Notion edits |
+| `notion_inbound_enrich` | Enrich triaged Notion edits |
 
 ## Configuration
 
@@ -284,22 +305,23 @@ Resources:
 
 ```text
 ~/.graph-memory/
-  nodes/                    # Active durable knowledge nodes for all graph layers
-  archive/                  # Archived nodes
-  dreams/                   # pending/, integrated/, archived/
+  nodes/                    # Active durable knowledge nodes (canonical store, 22 category dirs)
+  archive/                  # Archived nodes + legacy docs
+    v3-graph-backup/        # Archived diverged v3 graph directory
+  dreams/                   # pending/, integrated/, archived/, projects/
   briefs/                   # Daily brief outputs
-  graph/.index.json         # v3 lookup index for nodes/
-  mind/                     # v3 Layer 1: global mental model
+    daily/
+  mind/                     # Global mental model
     model.json              # cognitive style, preferences, guardrails
     whisper.txt             # pre-generated injection paragraph
     observations.jsonl      # append-only observation feed
-  lenses/                   # v3 Layer 2: project models
+  lenses/                   # Per-project models
     {project}/
       model.json            # project model
       whisper.txt           # project whisper
       observations.jsonl    # project observations
-    _archived/              # dormant project lenses
-  sessions/                 # v3 Layer 3: session logs
+    _archived/              # decommissioned project lenses
+  sessions/                 # Session logs
     {project}.jsonl
   working/                  # Per-project working state
     global.md
@@ -307,7 +329,20 @@ Resources:
   .deltas/                  # Scribe output
   .jobs/                    # Background queue state
   .pipeline-logs/           # Worker logs
-  MAP.md, PRIORS.md, SOMA.md, WORKING.md, DREAMS.md  # v2 context files
+  .pipeline/                # Pipeline intermediate state
+    observations/absorbed/  # Absorbed observation deltas
+  .logs/                    # Activity log + input-refresh logs
+  .inputs/                  # External brief inputs
+    gmail/, calendar/, slack/  # Per-source classified/normalized/
+    config.json
+  .skillforge/              # Generated skill manifests
+  .notion-sync-state.json   # Notion workspace sync state
+  .notion-sync-input.json   # Notion sync input staging
+  .notion-sync-plan.json    # Notion sync execution plan
+  MAP.md                    # Knowledge graph index (context file)
+  WORKING.md                # Project handoff state (context file)
+  DREAMS.md                 # Speculative fragments (context file)
+  PRIORS.md, SOMA.md        # Legacy context files (superseded by mental model)
 ```
 
 ## Dashboard
@@ -333,5 +368,6 @@ Server: Express on port 3001. Frontend: React + Vite on port 5173.
 - memory section templates: [`templates/`](./templates/)
 - agent instructions: [`agents/`](./agents/)
 - v3 pipeline agents: observer, compressor, dreamer-v3
-- migration script: [`src/graph-memory/scripts/migrate-v2-to-v3.ts`](./src/graph-memory/scripts/migrate-v2-to-v3.ts)
+- migration script: [`src/graph-memory/scripts/migrate-v2-to-v3.ts`](./src/graph-memory/scripts/migrate-v2-to-v3.ts) (legacy)
+- Notion sync design spec: [`docs/notion-sync-spec.md`](./docs/notion-sync-spec.md)
 - examples: [`../examples/`](../examples/)

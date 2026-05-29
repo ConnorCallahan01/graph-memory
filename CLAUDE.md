@@ -117,9 +117,9 @@ The v2 pipeline is the active, proven pipeline. All four prompts were improved t
 Session-start uses a tiered strategy:
 
 - **If `GRAPH_MEMORY_V3=1` and whisper data exists** — compressed whispers (~1,100 tokens): global whisper ~400, project whisper ~500, session logs ~200, guardrails ~150
-- **Otherwise (default)** — reads `mind/model.json` directly + MAP + WORKING + PINNED + DREAMS
+- **Otherwise (default)** — reads `mind/model.json` directly (unconditional) → MAP (per-project) → PINNED (project-gated) → WORKING. Whisper layer eliminated 2026-05-22 in favor of direct model.json reads.
 
-Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach. Whisper is injected as prefix before v2 context, not gated by `hasV3Data()`.
+Both paths use the same underlying mental model data. The structured model replaced the old PRIORS.md + SOMA.md approach.
 
 ### v2/v3 Hybrid Architecture
 
