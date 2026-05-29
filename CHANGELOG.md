@@ -5,6 +5,14 @@ All notable changes to graph-memory will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] — 2026-05-29
+
+### Fixed
+
+- **Edges/anti_edges parsing hardened** — auditor crashed on nodes with non-array `edges` (single YAML object). All `parsed.data.edges || []` replaced with `Array.isArray` guard across preflight, observer-tools, graph-ops, graph-index, mechanical-apply, and librarian. Same for `anti_edges`.
+- **Daemon steward isolation** — try/catch around each Notion sync steward so one failure doesn't block others.
+- **execNtn env var injection** — injects `NOTION_API_TOKEN` into Docker container ntn calls, fixing keychain priority issue where ntn checked macOS Keychain before env var.
+
 ## [3.0.0] — 2026-05-15
 
 ### Changed
