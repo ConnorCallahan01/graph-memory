@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — Lifecycle Audit Hardening
+## 3.0.1 (2026-05-29) — Lifecycle Audit Hardening
 
 ### Daemon Crash Resilience (P0 fixes)
 
@@ -65,6 +65,12 @@ The daemon main loop had no catch block — any tick-level error permanently kil
 - `plugin.json` updated to v3.0.0 with all 7 commands and 9 agents registered
 - `install.sh` symlinks all 12 commands
 - `.gitignore` updated: `.DS_Store`, `graph-memory/`, `.env` patterns
+
+### Edges Parsing Hardening
+
+- **`Array.isArray` guard on `edges`/`anti_edges`** — auditor crashed when a node had non-array `edges` (single YAML object missing target). Replaced all `parsed.data.edges || []` with `Array.isArray` check across preflight, observer-tools, graph-ops, graph-index, mechanical-apply, and librarian. Same for `anti_edges`.
+- **Daemon steward isolation** — try/catch around each steward so one failing steward doesn't block others.
+- **execNtn env var injection** — injects `NOTION_API_TOKEN` into Docker container ntn calls, fixing keychain priority issue.
 
 ---
 
